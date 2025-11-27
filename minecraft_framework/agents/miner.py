@@ -19,18 +19,19 @@ from minecraft_framework.messages import InventoryV1
 
 
 class MinerBot(BaseAgent):
-    def __init__(self, name: str, in_queue: Queue, out_queues: Dict[str, Queue], strategy: str = "vertical", mc=None):
-        super().__init__(name, in_queue, out_queues)
+    def __init__(self, name: str, in_queue: Queue, q_explorer: Queue, q_miner: Queue, q_builder: Queue, strategy: str = "vertical", mc=None):
+        super().__init__(name, in_queue, q_explorer, q_miner, q_builder)
         self.strategy = strategy
         self.inventory = {}
         self.current_task = None
         self.mc = mc  # Minecraft connection (opcional)
 
     async def _run_task(self):
-        self.log(f"Miner starting with strategy={self.strategy}")
+        # Bucle principal: espera BOM de BuilderBot y ejecuta minería hasta completar
+        self.estadoActual(f"Miner starting with strategy={self.strategy}")
         while not self._stop_requested:
             # revisar cola de entrada en cada iteración
-            incoming = await self._check_incoming()
+            incoming = await self.leerMensaje()
             if incoming:
                 # Mensajes tipo control o materials.requirements.v1
                 if isinstance(incoming, dict) and incoming.get("type") == "materials.requirements.v1":
@@ -38,9 +39,9 @@ class MinerBot(BaseAgent):
                     bom = payload.get("bom", {})
                     await self._fulfill_bom(bom)
                 elif isinstance(incoming, dict) and incoming.get("type") == "control":
-                    self.handle_control(incoming.get("payload", {}))
+                    self.gestionarControles(incoming.get("payload", {}))
                 else:
-                    self.log(f"Miner received unknown message: {incoming}")
+                    self.estadoActual(f"Miner received unknown message: {incoming}")
 
             await asyncio.sleep(0.5)
 
@@ -50,7 +51,8 @@ class MinerBot(BaseAgent):
         Publica `inventory.v1` con progress y al completar con complete=True.
         TODO: implementar estrategias reales.
         """
-        self.log(f"Received BOM: {bom}. Starting mining using {self.strategy}")
+        # Recolecta materiales del BOM y publica actualizaciones de inventario
+        self.estadoActual(f"Received BOM: {bom}. Starting mining using {self.strategy}")
         total_items = sum(bom.values()) if bom else 0
         collected = 0
         # simulación simple: cada iteración recogemos entre 1 y 3 unidades
@@ -68,14 +70,23 @@ class MinerBot(BaseAgent):
 
             progress = min(1.0, collected / total_items) if total_items else 1.0
             inv_msg = InventoryV1(inventory=self.inventory.copy(), complete=(progress >= 1.0)).to_message(origin=self.name)
-            self.send("BuilderBot", inv_msg)
-            self.log(f"Published inventory.v1 progress={progress:.2f}")
+            self.enviarMensaje("BuilderBot", inv_msg)
+            self.estadoActual(f"Published inventory.v1 progress={progress:.2f}")
             await asyncio.sleep(1)
 
-        self.log("Miner finished BOM (simulated)")
+        self.estadoActual("Miner finished BOM (simulated)")
 
 
-def agent_process_main(in_queue: Queue, out_queues: Dict[str, Queue], **kwargs):
+def agent_process_main(in_queue: Queue, q_explorer: Queue, q_miner: Queue, q_builder: Queue, **kwargs):
+    """Entry point para ejecutar en un proceso separado.
+
+    Args:
+        in_queue: Cola de entrada del agente
+        q_explorer: Cola del ExplorerBot
+        q_miner: Cola del MinerBot
+        q_builder: Cola del BuilderBot
+        **kwargs: Parámetros adicionales (mc_host, mc_port, strategy)
+    """
     # Intentar conectar a Minecraft si se proporcionan credenciales
     mc = None
     mc_host = kwargs.get("mc_host")
@@ -95,9 +106,9 @@ def agent_process_main(in_queue: Queue, out_queues: Dict[str, Queue], **kwargs):
         except Exception as e:
             print(f"[MinerBot] Could not connect to Minecraft: {e}. Using simulation.")
     
-    bot = MinerBot("MinerBot", in_queue, out_queues, strategy=kwargs.get("strategy", "vertical"), mc=mc)
+    bot = MinerBot("MinerBot", in_queue, q_explorer, q_miner, q_builder, strategy=kwargs.get("strategy", "vertical"), mc=mc)
     try:
         import asyncio
-        asyncio.run(bot.run())
+        asyncio.run(bot.iniciarAgente())
     except KeyboardInterrupt:
-        bot.log("KeyboardInterrupt in process")
+        bot.estadoActual("KeyboardInterrupt in process")

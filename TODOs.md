@@ -13,7 +13,7 @@ Equipo B (Persona 2) - Minería, Construcción y Orquestación:
 
 - Implementar estrategias de `MinerBot` en `minecraft_framework/agents/miner.py` (vertical, grid, vein).
 - Completar `BuilderBot` en `minecraft_framework/agents/builder.py`, BOM generation y procesamiento de inventario.
-- Implementar el orquestador `run_workflow.py` y la CLI en `minecraft_framework/cli.py`.
+- Implementar el orquestador `main.py` y la CLI en `minecraft_framework/cli.py`.
 - Añadir persistencia de checkpoints (JSON/pickle) para recuperación.
 
 Pasos comunes / Integración:

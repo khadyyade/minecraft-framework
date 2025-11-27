@@ -23,7 +23,7 @@ Esto:
 
 ### 2. Ejecutar el workflow completo de agentes
 ```powershell
-python "minecraft-framework\run_workflow.py"
+python "minecraft-framework\main.py"
 ```
 
 Esto arrancará los 3 agentes:
@@ -39,7 +39,7 @@ Esto arrancará los 3 agentes:
 
 ### 3. Modo simulación (sin Minecraft)
 ```powershell
-python "minecraft-framework\run_workflow.py" --no-minecraft
+python "minecraft-framework\main.py" --no-minecraft
 ```
 
 Útil para desarrollo sin necesidad del servidor activo.
@@ -110,7 +110,7 @@ BuilderBot --[build.v1]--> ALL (broadcast)
    - `vein`: Detectar y seguir vetas de materiales
 2. Mejorar `BuilderBot._handle_map()` para generar planes más complejos
 3. Añadir templates de construcción (casa, torre, puente)
-4. Implementar CLI interactiva en `run_workflow.py` (leer stdin y enviar comandos)
+4. Implementar CLI interactiva en `main.py` (leer stdin y enviar comandos)
 5. Añadir persistencia de inventario y logs de construcción
 
 ### Integración:
@@ -183,6 +183,6 @@ Ejecuta todo el flujo coordinado: explorar → planificar → minar → construi
 - `minecraft_framework/agents/miner.py` - MinerBot
 - `minecraft_framework/agents/builder.py` - BuilderBot
 - `minecraft_framework/cli.py` - Parser de comandos (esqueleto)
-- `run_workflow.py` - Orquestador principal
+- `main.py` - Orquestador principal
 - `test_connection.py` - Prueba de conexión rápida
 - `TODOs.md` - División de tareas pendientes

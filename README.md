@@ -41,13 +41,13 @@ Si ves mensajes de éxito (✓), la conexión funciona correctamente.
 
 ```powershell
 # Conectar a localhost:4711 (por defecto)
-python "minecraft-framework/run_workflow.py"
+python "minecraft-framework/main.py"
 
 # Especificar host/puerto personalizado
-python "minecraft-framework/run_workflow.py" --host=127.0.0.1 --port=4711
+python "minecraft-framework/main.py" --host=127.0.0.1 --port=4711
 
 # Ejecutar en modo simulación (sin conexión a Minecraft)
-python "minecraft-framework/run_workflow.py" --no-minecraft
+python "minecraft-framework/main.py" --no-minecraft
 ```
 
 El script arrancará tres procesos (Explorer, Miner, Builder) que:

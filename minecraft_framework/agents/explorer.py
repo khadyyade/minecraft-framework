@@ -19,8 +19,8 @@ from minecraft_framework.messages import MapV1
 
 
 class ExplorerBot(BaseAgent):
-    def __init__(self, name: str, in_queue: Queue, out_queues: Dict[str, Queue], x: int = 0, z: int = 0, scan_range: int = 8, mc=None):
-        super().__init__(name, in_queue, out_queues)
+    def __init__(self, name: str, in_queue: Queue, q_explorer: Queue, q_miner: Queue, q_builder: Queue, x: int = 0, z: int = 0, scan_range: int = 8, mc=None):
+        super().__init__(name, in_queue, q_explorer, q_miner, q_builder)
         self.x = x
         self.z = z
         self.scan_range = scan_range
@@ -34,10 +34,11 @@ class ExplorerBot(BaseAgent):
         Actualmente la función `get_height` está simulada. En una integración real,
         usar `mcpi.minecraft.Minecraft.create()` y `mc.getHeight(x,z)`.
         """
-        self.log(f"Starting exploration at x={self.x} z={self.z} range={self.scan_range}")
+        # Ejecuta el ciclo de exploración: escanea terreno, detecta zonas planas y envía map.v1
+        self.estadoActual(f"Starting exploration at x={self.x} z={self.z} range={self.scan_range}")
         while not self._stop_requested:
             if self.state == AgentState.PAUSED:
-                self.log("Explorer paused; waiting to resume")
+                self.estadoActual("Explorer paused; waiting to resume")
                 await asyncio.sleep(0.5)
                 continue
 
@@ -50,26 +51,27 @@ class ExplorerBot(BaseAgent):
             map_msg = MapV1(area={"x": self.x, "z": self.z, "range": self.scan_range}, heights=heights, flat_zones=flat_zones).to_message(origin=self.name)
 
             # Enviar a BuilderBot si existe
-            self.send("BuilderBot", map_msg)
-            self.log(f"Published map.v1 with {len(flat_zones)} flat zones")
+            self.enviarMensaje("BuilderBot", map_msg)
+            self.estadoActual(f"Published map.v1 with {len(flat_zones)} flat zones")
 
             # Chequear cola de control cada iteración
             await asyncio.sleep(2)
-            incoming = await self._check_incoming()
+            incoming = await self.leerMensaje()
             if incoming:
                 # Suponemos que los mensajes de control vienen como dicts con 'cmd'
                 if isinstance(incoming, dict) and incoming.get("type") == "control":
-                    self.handle_control(incoming.get("payload", {}))
+                    self.gestionarControles(incoming.get("payload", {}))
                 else:
-                    self.log(f"Explorer received: {incoming}")
+                    self.estadoActual(f"Explorer received: {incoming}")
 
-        self.log("Explorer exiting main loop")
+        self.estadoActual("Explorer exiting main loop")
 
     def _simulate_scan(self, x: int, z: int, r: int) -> List[List[int]]:
         """Escanea una matriz de alturas (range*2+1) x (range*2+1).
 
         Usa mc.getHeight(x,z) si hay conexión, sino simula.
         """
+        # Escanea el terreno y devuelve una matriz con las alturas de cada bloque
         size = r * 2 + 1
         heights = []
         
@@ -82,7 +84,7 @@ class ExplorerBot(BaseAgent):
                         height = self.mc.getHeight(x + i, z + j)
                         row.append(height)
                     except Exception as e:
-                        self.log(f"Error getting height at ({x+i},{z+j}): {e}")
+                        self.estadoActual(f"Error getting height at ({x+i},{z+j}): {e}")
                         row.append(64)  # fallback
                 else:
                     # Simulación
@@ -95,6 +97,7 @@ class ExplorerBot(BaseAgent):
 
         TODO: mejorar con análisis de varianza y tamaño mínimo.
         """
+        # Analiza la matriz de alturas y devuelve lista de zonas planas encontradas
         flat = []
         size = len(heights)
         # versión simple: si toda la primera fila tiene la misma altura, lo marca
@@ -104,11 +107,15 @@ class ExplorerBot(BaseAgent):
         return flat
 
 
-def agent_process_main(in_queue: Queue, out_queues: Dict[str, Queue], **kwargs):
+def agent_process_main(in_queue: Queue, q_explorer: Queue, q_miner: Queue, q_builder: Queue, **kwargs):
     """Entry point para ejecutar en un proceso separado.
 
-    Se crea un loop asyncio y se ejecuta `ExplorerBot.run()`.
-    kwargs puede incluir 'mc_host', 'mc_port' para conexión real.
+    Args:
+        in_queue: Cola de entrada del agente
+        q_explorer: Cola del ExplorerBot
+        q_miner: Cola del MinerBot
+        q_builder: Cola del BuilderBot
+        **kwargs: Parámetros adicionales (mc_host, mc_port, x, z, range)
     """
     # Intentar conectar a Minecraft si se proporcionan credenciales
     mc = None
@@ -133,13 +140,15 @@ def agent_process_main(in_queue: Queue, out_queues: Dict[str, Queue], **kwargs):
     bot = ExplorerBot(
         "ExplorerBot",
         in_queue,
-        out_queues,
+        q_explorer,
+        q_miner,
+        q_builder,
         x=kwargs.get("x", 0),
         z=kwargs.get("z", 0),
         scan_range=kwargs.get("range", 8),
         mc=mc
     )
     try:
-        asyncio.run(bot.run())
+        asyncio.run(bot.iniciarAgente())
     except KeyboardInterrupt:
-        bot.log("KeyboardInterrupt in process")
+        bot.estadoActual("KeyboardInterrupt in process")
