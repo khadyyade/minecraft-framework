@@ -19,11 +19,12 @@ from minecraft_framework.messages import InventoryV1
 
 
 class MinerBot(BaseAgent):
-    def __init__(self, name: str, in_queue: Queue, out_queues: Dict[str, Queue], strategy: str = "vertical"):
+    def __init__(self, name: str, in_queue: Queue, out_queues: Dict[str, Queue], strategy: str = "vertical", mc=None):
         super().__init__(name, in_queue, out_queues)
         self.strategy = strategy
         self.inventory = {}
         self.current_task = None
+        self.mc = mc  # Minecraft connection (opcional)
 
     async def _run_task(self):
         self.log(f"Miner starting with strategy={self.strategy}")
@@ -75,10 +76,28 @@ class MinerBot(BaseAgent):
 
 
 def agent_process_main(in_queue: Queue, out_queues: Dict[str, Queue], **kwargs):
-    bot = MinerBot("MinerBot", in_queue, out_queues, strategy=kwargs.get("strategy", "vertical"))
+    # Intentar conectar a Minecraft si se proporcionan credenciales
+    mc = None
+    mc_host = kwargs.get("mc_host")
+    mc_port = kwargs.get("mc_port")
+    
+    if mc_host and mc_port:
+        try:
+            import sys
+            import os
+            base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+            mcpi_path = os.path.join(base, "AdventuresInMinecraft-PC", "MyAdventures")
+            if os.path.exists(mcpi_path):
+                sys.path.insert(0, mcpi_path)
+            from mcpi.minecraft import Minecraft
+            mc = Minecraft.create(mc_host, mc_port)
+            print(f"[MinerBot] Connected to Minecraft at {mc_host}:{mc_port}")
+        except Exception as e:
+            print(f"[MinerBot] Could not connect to Minecraft: {e}. Using simulation.")
+    
+    bot = MinerBot("MinerBot", in_queue, out_queues, strategy=kwargs.get("strategy", "vertical"), mc=mc)
     try:
         import asyncio
-
         asyncio.run(bot.run())
     except KeyboardInterrupt:
         bot.log("KeyboardInterrupt in process")

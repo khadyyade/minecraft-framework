@@ -18,11 +18,12 @@ from minecraft_framework.messages import MaterialsRequirementsV1, BuildV1
 
 
 class BuilderBot(BaseAgent):
-    def __init__(self, name: str, in_queue: Queue, out_queues: Dict[str, Queue]):
+    def __init__(self, name: str, in_queue: Queue, out_queues: Dict[str, Queue], mc=None):
         super().__init__(name, in_queue, out_queues)
         self.current_plan = None
         self.bom = {}
         self.inventory = {}
+        self.mc = mc  # Minecraft connection (opcional)
 
     async def _run_task(self):
         self.log("Builder started and waiting for map.v1 messages")
@@ -62,28 +63,77 @@ class BuilderBot(BaseAgent):
             await self._start_build()
 
     async def _start_build(self):
-        self.log("Starting build (simulated). Placing blocks...)")
+        self.log("Starting build. Placing blocks...")
         total_steps = 10
+        
+        # Si tenemos conexión real, obtener posición del jugador como base
+        base_x, base_y, base_z = 0, 64, 0
+        if self.mc is not None:
+            try:
+                pos = self.mc.player.getTilePos()
+                base_x, base_y, base_z = pos.x + 5, pos.y, pos.z
+                self.mc.postToChat(f"BuilderBot: Iniciando construcción en ({base_x}, {base_y}, {base_z})")
+            except Exception as e:
+                self.log(f"Error getting player position: {e}")
+        
         for i in range(total_steps):
             if self.state == AgentState.PAUSED:
                 await asyncio.sleep(0.5)
                 continue
+            
+            # Colocar bloque real si tenemos conexión
+            if self.mc is not None:
+                try:
+                    # Construir una línea de bloques como demo
+                    import sys
+                    import os
+                    base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+                    mcpi_path = os.path.join(base, "AdventuresInMinecraft-PC", "MyAdventures")
+                    if mcpi_path not in sys.path:
+                        sys.path.insert(0, mcpi_path)
+                    import mcpi.block as block
+                    self.mc.setBlock(base_x + i, base_y, base_z, block.STONE.id)
+                    self.log(f"Placed block at ({base_x + i}, {base_y}, {base_z})")
+                except Exception as e:
+                    self.log(f"Error placing block: {e}")
+            
             progress = (i + 1) / total_steps
-            details = {"step": i + 1, "total": total_steps}
+            details = {"step": i + 1, "total": total_steps, "pos": (base_x + i, base_y, base_z)}
             msg = BuildV1(progress=progress, details=details).to_message(origin=self.name)
             # broadcast build progress to all known agents
             for target in self.out_queues.keys():
                 self.send(target, msg)
             self.log(f"Published build.v1 progress={progress:.2f}")
             await asyncio.sleep(1)
-        self.log("Build completed (simulated)")
+        
+        if self.mc is not None:
+            self.mc.postToChat("BuilderBot: Construcción completada!")
+        self.log("Build completed")
 
 
 def agent_process_main(in_queue: Queue, out_queues: Dict[str, Queue], **kwargs):
-    bot = BuilderBot("BuilderBot", in_queue, out_queues)
+    # Intentar conectar a Minecraft si se proporcionan credenciales
+    mc = None
+    mc_host = kwargs.get("mc_host")
+    mc_port = kwargs.get("mc_port")
+    
+    if mc_host and mc_port:
+        try:
+            import sys
+            import os
+            base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+            mcpi_path = os.path.join(base, "AdventuresInMinecraft-PC", "MyAdventures")
+            if os.path.exists(mcpi_path):
+                sys.path.insert(0, mcpi_path)
+            from mcpi.minecraft import Minecraft
+            mc = Minecraft.create(mc_host, mc_port)
+            print(f"[BuilderBot] Connected to Minecraft at {mc_host}:{mc_port}")
+        except Exception as e:
+            print(f"[BuilderBot] Could not connect to Minecraft: {e}. Using simulation.")
+    
+    bot = BuilderBot("BuilderBot", in_queue, out_queues, mc=mc)
     try:
         import asyncio
-
         asyncio.run(bot.run())
     except KeyboardInterrupt:
         bot.log("KeyboardInterrupt in process")

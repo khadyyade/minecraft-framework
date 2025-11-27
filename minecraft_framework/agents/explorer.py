@@ -19,11 +19,12 @@ from minecraft_framework.messages import MapV1
 
 
 class ExplorerBot(BaseAgent):
-    def __init__(self, name: str, in_queue: Queue, out_queues: Dict[str, Queue], x: int = 0, z: int = 0, scan_range: int = 8):
+    def __init__(self, name: str, in_queue: Queue, out_queues: Dict[str, Queue], x: int = 0, z: int = 0, scan_range: int = 8, mc=None):
         super().__init__(name, in_queue, out_queues)
         self.x = x
         self.z = z
         self.scan_range = scan_range
+        self.mc = mc  # Minecraft connection (opcional, si None usa simulación)
         self._paused_event = asyncio.Event()
         self._paused_event.set()
 
@@ -65,18 +66,27 @@ class ExplorerBot(BaseAgent):
         self.log("Explorer exiting main loop")
 
     def _simulate_scan(self, x: int, z: int, r: int) -> List[List[int]]:
-        """Simula una matriz de alturas (range*2+1) x (range*2+1).
+        """Escanea una matriz de alturas (range*2+1) x (range*2+1).
 
-        En la implementación real usar `mc.getHeight(x+i,z+j)`.
+        Usa mc.getHeight(x,z) si hay conexión, sino simula.
         """
         size = r * 2 + 1
         heights = []
-        base = 64
-        for i in range(size):
+        
+        for i in range(-r, r + 1):
             row = []
-            for j in range(size):
-                # pequeña variación aleatoria
-                row.append(base + random.randint(-2, 3))
+            for j in range(-r, r + 1):
+                if self.mc is not None:
+                    # Usar API real de Minecraft
+                    try:
+                        height = self.mc.getHeight(x + i, z + j)
+                        row.append(height)
+                    except Exception as e:
+                        self.log(f"Error getting height at ({x+i},{z+j}): {e}")
+                        row.append(64)  # fallback
+                else:
+                    # Simulación
+                    row.append(64 + random.randint(-2, 3))
             heights.append(row)
         return heights
 
@@ -98,8 +108,37 @@ def agent_process_main(in_queue: Queue, out_queues: Dict[str, Queue], **kwargs):
     """Entry point para ejecutar en un proceso separado.
 
     Se crea un loop asyncio y se ejecuta `ExplorerBot.run()`.
+    kwargs puede incluir 'mc_host', 'mc_port' para conexión real.
     """
-    bot = ExplorerBot("ExplorerBot", in_queue, out_queues, x=kwargs.get("x", 0), z=kwargs.get("z", 0), scan_range=kwargs.get("range", 8))
+    # Intentar conectar a Minecraft si se proporcionan credenciales
+    mc = None
+    mc_host = kwargs.get("mc_host")
+    mc_port = kwargs.get("mc_port")
+    
+    if mc_host and mc_port:
+        try:
+            import sys
+            import os
+            # Añadir MyAdventures al path
+            base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+            mcpi_path = os.path.join(base, "AdventuresInMinecraft-PC", "MyAdventures")
+            if os.path.exists(mcpi_path):
+                sys.path.insert(0, mcpi_path)
+            from mcpi.minecraft import Minecraft
+            mc = Minecraft.create(mc_host, mc_port)
+            print(f"[ExplorerBot] Connected to Minecraft at {mc_host}:{mc_port}")
+        except Exception as e:
+            print(f"[ExplorerBot] Could not connect to Minecraft: {e}. Using simulation.")
+    
+    bot = ExplorerBot(
+        "ExplorerBot",
+        in_queue,
+        out_queues,
+        x=kwargs.get("x", 0),
+        z=kwargs.get("z", 0),
+        scan_range=kwargs.get("range", 8),
+        mc=mc
+    )
     try:
         asyncio.run(bot.run())
     except KeyboardInterrupt:
