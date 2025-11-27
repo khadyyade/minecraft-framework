@@ -1,0 +1,89 @@
+"""
+BuilderBot skeleton.
+
+Responsabilidades:
+- Recibir `map.v1` de ExplorerBot y generar un plan / BOM.
+- Publicar `materials.requirements.v1` hacia MinerBot.
+- Recibir `inventory.v1` y, cuando haya materiales suficientes, ejecutar la construcción
+  (simulada) publicando `build.v1` con progreso.
+
+Muchos pasos están indicados como TODO para que los alumnos implementen los detalles.
+"""
+import asyncio
+from multiprocessing import Queue
+from typing import Dict, Any
+
+from minecraft_framework.core import BaseAgent, AgentState
+from minecraft_framework.messages import MaterialsRequirementsV1, BuildV1
+
+
+class BuilderBot(BaseAgent):
+    def __init__(self, name: str, in_queue: Queue, out_queues: Dict[str, Queue]):
+        super().__init__(name, in_queue, out_queues)
+        self.current_plan = None
+        self.bom = {}
+        self.inventory = {}
+
+    async def _run_task(self):
+        self.log("Builder started and waiting for map.v1 messages")
+        while not self._stop_requested:
+            incoming = await self._check_incoming()
+            if incoming:
+                if isinstance(incoming, dict) and incoming.get("type") == "map.v1":
+                    payload = incoming.get("payload", {})
+                    await self._handle_map(payload)
+                elif isinstance(incoming, dict) and incoming.get("type") == "inventory.v1":
+                    payload = incoming.get("payload", {})
+                    await self._handle_inventory(payload)
+                elif isinstance(incoming, dict) and incoming.get("type") == "control":
+                    self.handle_control(incoming.get("payload", {}))
+                else:
+                    self.log(f"Builder got unknown message: {incoming}")
+
+            await asyncio.sleep(0.3)
+
+    async def _handle_map(self, payload: Dict[str, Any]):
+        # TODO: analizar heights y flat_zones para generar plan
+        self.log("Received map.v1; generating simple plan and BOM (simulated)")
+        # Plan simple de ejemplo: construir 10x10 de stone
+        self.current_plan = {"template": "simple_square", "params": {"w": 10, "d": 10}}
+        self.bom = {"stone": 100}
+        msg = MaterialsRequirementsV1(bom=self.bom).to_message(origin=self.name)
+        self.send("MinerBot", msg)
+        self.log(f"Published materials.requirements.v1 with BOM: {self.bom}")
+
+    async def _handle_inventory(self, payload: Dict[str, Any]):
+        inv = payload.get("inventory", {})
+        complete = payload.get("complete", False)
+        self.inventory.update(inv)
+        self.log(f"Inventory update: {self.inventory}; complete={complete}")
+        # comprobar si tenemos suficientes materiales
+        if all(self.inventory.get(k, 0) >= v for k, v in self.bom.items()):
+            await self._start_build()
+
+    async def _start_build(self):
+        self.log("Starting build (simulated). Placing blocks...)")
+        total_steps = 10
+        for i in range(total_steps):
+            if self.state == AgentState.PAUSED:
+                await asyncio.sleep(0.5)
+                continue
+            progress = (i + 1) / total_steps
+            details = {"step": i + 1, "total": total_steps}
+            msg = BuildV1(progress=progress, details=details).to_message(origin=self.name)
+            # broadcast build progress to all known agents
+            for target in self.out_queues.keys():
+                self.send(target, msg)
+            self.log(f"Published build.v1 progress={progress:.2f}")
+            await asyncio.sleep(1)
+        self.log("Build completed (simulated)")
+
+
+def agent_process_main(in_queue: Queue, out_queues: Dict[str, Queue], **kwargs):
+    bot = BuilderBot("BuilderBot", in_queue, out_queues)
+    try:
+        import asyncio
+
+        asyncio.run(bot.run())
+    except KeyboardInterrupt:
+        bot.log("KeyboardInterrupt in process")
