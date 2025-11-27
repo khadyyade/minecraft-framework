@@ -13,7 +13,7 @@ import asyncio
 from multiprocessing import Queue
 from typing import Dict, Any
 
-from minecraft_framework.core import BaseAgent, AgentState
+from minecraft_framework.baseAgent import BaseAgent, AgentState
 from minecraft_framework.messages import MaterialsRequirementsV1, BuildV1
 
 

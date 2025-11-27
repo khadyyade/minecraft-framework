@@ -2,10 +2,8 @@
 from multiprocessing import Process, Queue
 import time
 import json
-# Renombramos los mains de cada agente con un nombre mas facil
-from minecraft_framework.agents.explorer import agent_process_main as explorer_main
-from minecraft_framework.agents.miner import agent_process_main as miner_main
-from minecraft_framework.agents.builder import agent_process_main as builder_main
+# Usamos el registry para descubrir los agentes dinámicamente
+from minecraft_framework.registry import get_registry
 
 # Función que inicia a los 3 agentes
 # Parametro 1 (mc_host) indica el host del servidor, por defecto localhost
@@ -14,6 +12,18 @@ from minecraft_framework.agents.builder import agent_process_main as builder_mai
 #   [11:38:58 INFO]: [RaspberryJuice] Using port 4711
 
 def start_agents(mc_host="localhost", mc_port=4711):
+    
+    # Obtener el registro de agentes y descubrir todos los agentes disponibles
+    registry = get_registry()
+    registry.discover_agents()
+    
+    # Obtener las clases de los agentes que necesitamos
+    ExplorerBot = registry.get_agent("ExplorerBot")
+    MinerBot = registry.get_agent("MinerBot")
+    BuilderBot = registry.get_agent("BuilderBot")
+    
+    if not ExplorerBot or not MinerBot or not BuilderBot:
+        raise RuntimeError("No se pudieron descubrir todos los agentes necesarios")
 
     # Crear las colas (cada agente tiene la suya)
     q_explorer = Queue()
@@ -34,11 +44,24 @@ def start_agents(mc_host="localhost", mc_port=4711):
     builder_kwargs = {**minecraft_connection_params}
 
 
-    # Lanzar procesos de cada agente con los parámetros que necesitan
+    # Lanzar procesos de cada agente usando las clases obtenidas del registry
+    # Cada agente se instancia con sus colas y parámetros específicos
     # args: (cola_propia, cola_explorer, cola_miner, cola_builder)
-    p_explorer = Process(target=explorer_main, args=(q_explorer, q_explorer, q_miner, q_builder), kwargs=explorer_kwargs)
-    p_miner = Process(target=miner_main, args=(q_miner, q_explorer, q_miner, q_builder), kwargs=miner_kwargs)
-    p_builder = Process(target=builder_main, args=(q_builder, q_explorer, q_miner, q_builder), kwargs=builder_kwargs)
+    p_explorer = Process(
+        target=ExplorerBot.agent_process_main, 
+        args=(q_explorer, q_explorer, q_miner, q_builder), 
+        kwargs=explorer_kwargs
+    )
+    p_miner = Process(
+        target=MinerBot.agent_process_main, 
+        args=(q_miner, q_explorer, q_miner, q_builder), 
+        kwargs=miner_kwargs
+    )
+    p_builder = Process(
+        target=BuilderBot.agent_process_main, 
+        args=(q_builder, q_explorer, q_miner, q_builder), 
+        kwargs=builder_kwargs
+    )
 
     # Una vez creados solo queda iniciarlos
     p_explorer.start()

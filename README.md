@@ -5,7 +5,49 @@ Este repositorio contiene un esqueleto para implementar tres agentes que interac
 - Carpeta del paquete: `minecraft_framework`
 - Objetivo: usar `asyncio` + `multiprocessing.Queue` para comunicar procesos/agents.
 
-## Configuración y conexión al servidor Minecraft
+## Arquitectura
+
+### Ciclo Percepción-Decisión-Acción
+
+Todos los agentes heredan de `BaseAgent` e implementan el ciclo:
+
+1. **`perceive()`**: Lee mensajes entrantes y estado del entorno
+2. **`decide()`**: Procesa la percepción y determina qué hacer
+3. **`act()`**: Ejecuta la decisión tomada
+
+```python
+class MiAgente(BaseAgent):
+    async def perceive(self) -> Dict[str, Any]:
+        # Leer mensajes, sensores, estado
+        return {"mensajes": [...], "estado": "..."}
+    
+    async def decide(self, perception: Dict[str, Any]) -> Dict[str, Any]:
+        # Procesar y decidir
+        return {"accion": "explorar", "params": {...}}
+    
+    async def act(self, decision: Dict[str, Any]):
+        # Ejecutar acción
+        ...
+```
+
+### Registro Dinámico de Agentes
+
+El sistema usa **reflexión** para descubrir agentes automáticamente:
+
+```python
+from minecraft_framework.registry import get_registry
+
+# Descubre todos los agentes en agents/
+registry = get_registry()
+
+# Obtener un agente dinámicamente
+ExplorerBot = registry.get_agent("ExplorerBot")
+
+# Listar todos los agentes
+print(registry.list_agents())
+```
+
+**No se permiten imports manuales de agentes** - el sistema los carga automáticamente.
 
 ### Prerequisitos
 1. **Servidor Minecraft corriendo**: Ejecuta `AdventuresInMinecraft-PC/Server/start.bat` o `StartServer.bat`

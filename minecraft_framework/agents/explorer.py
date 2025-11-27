@@ -14,7 +14,7 @@ import random
 from multiprocessing import Queue
 from typing import Dict, Any, List
 
-from minecraft_framework.core import BaseAgent, AgentState
+from minecraft_framework.baseAgent import BaseAgent, AgentState
 from minecraft_framework.messages import MapV1
 
 
