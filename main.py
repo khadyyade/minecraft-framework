@@ -2,8 +2,19 @@
 from multiprocessing import Process, Queue
 import time
 import json
-# Usamos el registry para descubrir los agentes dinámicamente
-from minecraft_framework.registry import get_registry
+import importlib
+
+
+# Función para obtener un agente usando reflection (importlib) (Punto 3)
+# Parametro: nombre del agente
+# Salida: clase del agente
+def obtenerClaseAgente(agent_name: str):
+
+    module = importlib.import_module(f"minecraft_framework.agents.{agent_name}")
+    # Obtener la clase principal del módulo (ExplorerBot, MinerBot, BuilderBot)
+    class_name = agent_name.capitalize() + "Bot"
+    return getattr(module, class_name)
+
 
 # Función que inicia a los 3 agentes
 # Parametro 1 (mc_host) indica el host del servidor, por defecto localhost
@@ -11,19 +22,12 @@ from minecraft_framework.registry import get_registry
 #   [11:38:58 INFO]: [RaspberryJuice] Enabling RaspberryJuice v1.10
 #   [11:38:58 INFO]: [RaspberryJuice] Using port 4711
 
-def start_agents(mc_host="localhost", mc_port=4711):
+def iniciarAgentes(mc_host="localhost", mc_port=4711):
     
-    # Obtener el registro de agentes y descubrir todos los agentes disponibles
-    registry = get_registry()
-    registry.discover_agents()
-    
-    # Obtener las clases de los agentes que necesitamos
-    ExplorerBot = registry.get_agent("ExplorerBot")
-    MinerBot = registry.get_agent("MinerBot")
-    BuilderBot = registry.get_agent("BuilderBot")
-    
-    if not ExplorerBot or not MinerBot or not BuilderBot:
-        raise RuntimeError("No se pudieron descubrir todos los agentes necesarios")
+    # Cargar las clases de los agentes usando reflection
+    ExplorerBot = obtenerClaseAgente("explorer")
+    MinerBot = obtenerClaseAgente("miner")
+    BuilderBot = obtenerClaseAgente("builder")
 
     # Crear las colas (cada agente tiene la suya)
     q_explorer = Queue()
@@ -47,27 +51,15 @@ def start_agents(mc_host="localhost", mc_port=4711):
     # Lanzar procesos de cada agente usando las clases obtenidas del registry
     # Cada agente se instancia con sus colas y parámetros específicos
     # args: (cola_propia, cola_explorer, cola_miner, cola_builder)
-    p_explorer = Process(
-        target=ExplorerBot.agent_process_main, 
-        args=(q_explorer, q_explorer, q_miner, q_builder), 
-        kwargs=explorer_kwargs
-    )
-    p_miner = Process(
-        target=MinerBot.agent_process_main, 
-        args=(q_miner, q_explorer, q_miner, q_builder), 
-        kwargs=miner_kwargs
-    )
-    p_builder = Process(
-        target=BuilderBot.agent_process_main, 
-        args=(q_builder, q_explorer, q_miner, q_builder), 
-        kwargs=builder_kwargs
-    )
+    p_explorer = Process(target=ExplorerBot.agent_process_main, args=(q_explorer, q_explorer, q_miner, q_builder), kwargs=explorer_kwargs)
+    p_miner = Process(target=MinerBot.agent_process_main, args=(q_miner, q_explorer, q_miner, q_builder), kwargs=miner_kwargs)
+    p_builder = Process(target=BuilderBot.agent_process_main, args=(q_builder, q_explorer, q_miner, q_builder), kwargs=builder_kwargs)
 
     # Una vez creados solo queda iniciarlos
+    # Al hacer .start() se ejecuta el método agent_process_main de ese agente
     p_explorer.start()
     p_miner.start()
     p_builder.start()
-
 
     # Con este bucle vamos a controlar los mensajes que circulan por las mailboxes
     # Y a detener los procesos si se pulas CTRL+C
@@ -79,16 +71,16 @@ def start_agents(mc_host="localhost", mc_port=4711):
             for name, q in [("Explorer", q_explorer), ("Miner", q_miner), ("Builder", q_builder)]:
                 # Cuando encontremos una cola no vacia
                 while not q.empty():
+
                     # Obtener el mensaje de la cola
                     raw = q.get()
-                    # Intentamos mostrar como JSON
-                    try:
-                        msg = json.loads(raw)
-                    # Si no lo mostramos como texto plano
-                    except Exception:
-                        msg = raw
+
+                    # Mostrammos como JSON
+                    msg = json.loads(raw)
                     print(f"[Main] Message from {name}: {msg}")
+                    
             time.sleep(0.5)
+    
     # Cuando se pulsa CTRL+C cancelamos todo
     except KeyboardInterrupt:
         print("Stopping agents...")
@@ -100,6 +92,7 @@ def start_agents(mc_host="localhost", mc_port=4711):
         p_builder.join(timeout=1)
 
 # Main de todo el programa python que lee si hay parámetros concretos por terminal para lanzar los agentes
+
 if __name__ == "__main__":
     import sys
     
@@ -118,4 +111,4 @@ if __name__ == "__main__":
     print(f"Iniciando agentes...")
     print(f"Conectando al servidor de Minecraft en: {mc_host}:{mc_port}")
     # Lanzamos la función principal que inicia los agentes
-    start_agents(mc_host=mc_host, mc_port=mc_port)
+    iniciarAgentes(mc_host=mc_host, mc_port=mc_port)

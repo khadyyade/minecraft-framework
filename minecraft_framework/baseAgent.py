@@ -1,9 +1,11 @@
 # Hemos creado una clase padre BaseAgent que cada agente extiende
-# Tiene varias funciones útiles como
+# Tiene varias funciones ya implementadas como
 # - enviarMensaje
 # - gestionarControles
 # - leerMensaje
 # - iniciarAgente
+# También tenemos los metodos abstractos para cada agente
+# - 
 # Gestionamos la comunicación entre los procesos con multiprocessing.Queue
 
 import asyncio
@@ -14,7 +16,12 @@ import time
 import json
 
 
-class AgentState(Enum):
+
+################
+# PATRÓN STATE #
+################
+
+class EstadoAgente(Enum):
     IDLE = "IDLE"
     RUNNING = "RUNNING"
     PAUSED = "PAUSED"
@@ -23,9 +30,20 @@ class AgentState(Enum):
     ERROR = "ERROR"
 
 
+###################
+# PATRÓN STRATEGY #
+###################
+
+class FaseEstado(Enum):
+    PERCEIVING = "PERCEIVING"
+    DECIDING = "DECIDING"
+    ACTING = "ACTING"
+    IDLE = "IDLE"
+
+
 class BaseAgent:
 
-    # Cosntructor
+    # Constructor
     def __init__(self, name: str, in_queue: Queue, q_explorer: Queue, q_miner: Queue, q_builder: Queue):
         self.name = name
         self.in_queue = in_queue
@@ -39,24 +57,40 @@ class BaseAgent:
             "MinerBot": q_miner,
             "BuilderBot": q_builder
         }
-        self.state = AgentState.IDLE
-        self._last_transition = time.time()
-        self._stop_requested = False
 
+        # Estado del agente (State Pattern)
+        self.estadoActual = EstadoAgente.IDLE
+        self.ultimoCambioEstado = time.time()
+        self.solicitudParada = False
+        
+        # Fase del ciclo perceive-decide-act (Strategy Pattern)
+        self.faseActual = FaseEstado.IDLE
+        
+        # Contexto compartido entre fases
+        self.context = {
+            "perception": None,
+            "decision": None,
+            "cycle_count": 0
+        }
 
-    # Métodos
+    ############################
+    # Métodos ya implementados #
+    ############################
 
     # Imprime un mensaje con timestamp, nombre del agente y estado actual
-    def estadoActual(self, msg: str):
-        ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-        print(f"[{ts}] [{self.name}] [{self.state.value}] {msg}")
+    def logs(self, msg: str):
+        # Parsear la fecha
+        fecha = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        # Printear la fecha, el estado, el nombre y un mensaje que recibimos por param
+        print(f"[{fecha}] [{self.name}] [{self.estadoActual.value}] {msg}")
 
 
     # Busca la cola del agente destino y envía el mensaje en JSON
     def enviarMensaje(self, target: str, message: Dict[str, Any]):
         q = self.out_queues.get(target)
+        # Controlar que el destinatario exista
         if q is None:
-            self.estadoActual(f"Warning: out_queue for '{target}' not found. Message dropped.")
+            self.logs(f"Warning: out_queue for '{target}' not found. Message dropped.")
             return
         # Intentamos transformar a JSON 
         try:
@@ -65,35 +99,31 @@ class BaseAgent:
             q.put_nowait(message)
 
     # Cambia el estado del agente y registra la transición con timestamp
-    def cambiarEstadoAgente(self, new_state: AgentState, reason: str = ""):
-        prev = self.state
-        self.state = new_state
-        self._last_transition = time.time()
-        self.estadoActual(f"State transition {prev.value} -> {new_state.value}. {reason}")
+    def cambiarEstadoAgente(self, nuevoEstado: EstadoAgente, razon: str = ""):
+        estadoAnterior = self.estadoActual
+        self.estadoActual = nuevoEstado
+        self.ultimoCambioEstado = time.time()
+        self.logs(f"Pasamos del estado {estadoAnterior.value} a {nuevoEstado.value}. {razon}")
 
     # Procesa los comandos de control (pause, resume, stop, update) y cambia el estado del agente
     def gestionarControles(self, control: Dict[str, Any]):
-        """Manejar mensajes de control: pause, resume, stop, update.
-
-        `control` es un dict con estructura mínima: { 'cmd': 'pause'|'resume'|... , 'args': {...} }
-        """
-        
-        cmd = control.get("cmd")
-        if cmd == "pause":
-            if self.state == AgentState.RUNNING:
-                self.cambiarEstadoAgente(AgentState.PAUSED, reason="paused by control")
-        elif cmd == "resume":
-            if self.state == AgentState.PAUSED:
-                self.cambiarEstadoAgente(AgentState.RUNNING, reason="resumed by control")
-        elif cmd == "stop":
-            self.estadoActual("Stop requested")
-            self._stop_requested = True
-            self.cambiarEstadoAgente(AgentState.STOPPED, reason="stopped by control")
-        elif cmd == "update":
-            # TODO: procesar actualizaciones de parámetros
-            self.estadoActual(f"Received update: {control.get('args')}")
+        # Dentro de control, que es un diccionario (clave valor) tenemos algo así: {"nuevoEstado": "pause", "args": {}}
+        nuevoEstado = control.get("nuevoEstado")
+        if nuevoEstado == "pause":
+            if self.estadoActual == EstadoAgente.RUNNING:
+                self.cambiarEstadoAgente(EstadoAgente.PAUSED, razon="paused by control")
+        elif nuevoEstado == "resume":
+            if self.estadoActual == EstadoAgente.PAUSED:
+                self.cambiarEstadoAgente(EstadoAgente.RUNNING, razon="resumed by control")
+        elif nuevoEstado == "stop":
+            self.logs("Stop requested")
+            self.solicitudParada = True
+            self.cambiarEstadoAgente(EstadoAgente.STOPPED, razon="stopped by control")
+        elif nuevoEstado == "update":
+            self.logs(f"Received update: {control.get('args')}")
+            # self.cambiarEstadoAgente(EstadoAgente., razon="stopped by control")
         else:
-            self.estadoActual(f"Unknown control command: {cmd}")
+            self.logs(f"Unknown control command: {nuevoEstado}")
 
     # Leer de la cola de entrada sin bloquear el loop asyncio
     async def leerMensaje(self):
@@ -127,24 +157,149 @@ class BaseAgent:
     # Inicia el agente, cambia a estado RUNNING y ejecuta la tarea principal
     async def iniciarAgente(self):
         
-        self.cambiarEstadoAgente(AgentState.RUNNING, reason="Iniciando bucle principal ")
+        self.cambiarEstadoAgente(EstadoAgente.RUNNING, razon="Iniciando bucle principal ")
         try:
             await self._run_task()
         except Exception as e:
-            self.estadoActual(f"Unhandled error in run: {e}")
-            self.cambiarEstadoAgente(AgentState.ERROR, reason=str(e))
+            self.logs(f"Unhandled error in run: {e}")
+            self.cambiarEstadoAgente(EstadoAgente.ERROR, razon=str(e))
 
+
+    ############################
+    ###### Bucle Principal #####
+    ############################
+
+    # Gestionamos el estado () y la estartegia 
+    
     async def _run_task(self):
-        """Implementa el ciclo percepción-decisión-acción.
-        
-        Las subclases pueden sobreescribir esto completamente o usar perceive/decide/act.
         """
-        while not self._stop_requested:
-            # Ciclo percepción-decisión-acción
+        Bucle principal
+        
+        Usa State Pattern para gestionar los estados del agente
+        Usa Strategy Pattern para las fases
+        
+        Estados posibles:
+            RUNNING     Ejecuta el ciclo perceive-decide-act
+            PAUSED      Espera sin ejecutar el ciclo
+            WAITING     Espera por condiciones externas
+            STOPPED     Termina el bucle
+            ERROR       Manejo de errores
+        
+        Fases del ciclo (cuando state == RUNNING)
+            PERCEIVING   perceive(): Obtener información del entorno
+            DECIDING     decide(): Procesar y tomar decisiones
+            ACTING       act(): Ejecutar acciones
+        """
+        
+        self.logs("Iniciando bucle principal")
+        
+        while not self.solicitudParada:
+            
+            # ┌─────────────────────────────────────────────────────────┐
+            # │ STATE PATTERN: Gestión de estados del agente           │
+            # └─────────────────────────────────────────────────────────┘
+            
+            if self.estadoActual == EstadoAgente.RUNNING:
+                # ESTADO RUNNING: Ejecutar ciclo perceive-decide-act
+                await self.ejecutarEstrategias()
+                
+            elif self.estadoActual == EstadoAgente.PAUSED:
+                # ESTADO PAUSED: Esperar sin hacer nada
+                self.faseActual = FaseEstado.IDLE
+                await asyncio.sleep(0.5)
+                
+            elif self.estadoActual == EstadoAgente.WAITING:
+                # ESTADO WAITING: Esperar condiciones externas
+                self.faseActual = FaseEstado.IDLE
+                await asyncio.sleep(0.2)
+                # Leer mensajes por si llega un comando
+                msg = await self.leerMensaje()
+                if msg and isinstance(msg, dict) and "nuevoEstado" in msg:
+                    self.gestionarControles(msg)
+                    
+            elif self.estadoActual == EstadoAgente.STOPPED:
+                # ESTADO STOPPED: Terminar bucle
+                self.logs("Agent stopped")
+                break
+                
+            elif self.estadoActual == EstadoAgente.ERROR:
+                # ESTADO ERROR: Esperar recuperación
+                self.faseActual = FaseEstado.IDLE
+                await asyncio.sleep(1.0)
+                
+            else:
+                # Otros estados
+                await asyncio.sleep(0.1)
+        
+        self.logs("Bucle principal terminado")
+    
+    
+    async def ejecutarEstrategias(self):
+        """Ejecuta un ciclo completo perceive-decide-act usando Strategy Pattern.
+        
+        Este método implementa el ciclo en 3 fases:
+            PERCEIVING → Recopilar información
+            DECIDING   → Procesar y decidir
+            ACTING     → Ejecutar acciones
+        """
+        
+        try:
+            # ┌─────────────────────────────────────────────────────────┐
+            # │ FASE 1: PERCEIVING                                      │
+            # │ Obtener información del entorno y mensajes              │
+            # └─────────────────────────────────────────────────────────┘
+            
+            self.faseActual = FaseEstado.PERCEIVING
             perception = await self.perceive()
+            self.context["perception"] = perception
+            
+            # Si el agente fue pausado durante perceive, salir
+            if self.estadoActual != EstadoAgente.RUNNING:
+                return
+            
+            # ┌─────────────────────────────────────────────────────────┐
+            # │ FASE 2: DECIDING                                        │
+            # │ Procesar percepción y tomar decisiones                  │
+            # └─────────────────────────────────────────────────────────┘
+            
+            self.faseActual = FaseEstado.DECIDING
             decision = await self.decide(perception)
+            self.context["decision"] = decision
+            
+            # Si el agente fue pausado durante decide, salir
+            if self.estadoActual != EstadoAgente.RUNNING:
+                return
+            
+            # ┌─────────────────────────────────────────────────────────┐
+            # │ FASE 3: ACTING                                          │
+            # │ Ejecutar la acción decidida                             │
+            # └─────────────────────────────────────────────────────────┘
+            
+            self.faseActual = FaseEstado.ACTING
             await self.act(decision)
-            await asyncio.sleep(0.1)  # Evitar busy-wait
+            
+            # Incrementar contador de ciclos
+            self.context["cycle_count"] += 1
+            
+            # Pequeña pausa entre ciclos para no saturar CPU
+            await asyncio.sleep(0.05)
+            
+        except NotImplementedError as e:
+            # El agente hijo no implementó perceive/decide/act
+            self.logs(f" {e}")
+            self.cambiarEstadoAgente(EstadoAgente.ERROR, razon=str(e))
+            
+        except Exception as e:
+            # Error durante el ciclo
+            self.logs(f"Error en ciclo [{self.faseActual.value}]: {e}")
+            self.cambiarEstadoAgente(EstadoAgente.ERROR, razon=str(e))
+            await asyncio.sleep(1.0)
+
+
+    # ============================================================================
+    # MÉTODOS ABSTRACTOS: Deben ser implementados por subclases
+    # ============================================================================
+
 
     async def perceive(self) -> Dict[str, Any]:
         """Fase de PERCEPCIÓN: lee mensajes entrantes y estado del entorno.

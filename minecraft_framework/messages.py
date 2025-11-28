@@ -1,13 +1,19 @@
 """
-Mensajes estandarizados para la comunicación entre agentes.
+Todos los agentes tienen que tener un formato estandar de JSON (Punto 3)
 
-Cada mensaje es un diccionario serializable. Aquí definimos dataclasses y helpers
-para crear y validar mensajes comunes: map.v1, materials.requirements.v1,
-inventory.v1 y build.v1.
+Hay diferentes tipos de mensajes (Punto 5)
 
-NOTA: Simplificamos la serialización usando dicts; si necesitáis persistencia,
-puede usarse JSON o pickle.
+- map.v1                        (ExplorerBot → BuilderBot)
+- materials.requirements.v1     (BuilderBot → MinerBot)
+- inventory.v1                  (MinerBot → BuilderBot)
+- build.v1                      (BuilderBot → All)
+
+Cada mensaje es un diccionario. 
+Esta clase la hemos creado para simplificar la creación y validación de estos mensajes
+
 """
+
+
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, List
 import time
