@@ -41,14 +41,14 @@ class ExplorerBot(BaseAgent):
     # CONSTRUCTOR
     # ============================================================================
     
-    def __init__(self, name: str, in_queue: Queue, q_explorer: Queue, q_miner: Queue, q_builder: Queue, x: int = 0, z: int = 0, scan_range: int = 8, mc=None):
+    def __init__(self, name: str, in_queue: Queue, q_explorer: Queue, q_miner: Queue, q_builder: Queue, x: int = 0, z: int = 0, rangoScan: int = 8, mc=None):
         # Llamamos al constructor padre BaseAgent
         super().__init__(name, in_queue, q_explorer, q_miner, q_builder)
         
         # Parámetros de exploración
         self.x = x
         self.z = z
-        self.scan_range = scan_range
+        self.rangoScan = rangoScan
         self.mc = mc
         
         # Variables internas
@@ -62,7 +62,7 @@ class ExplorerBot(BaseAgent):
     # ============================================================================
 
     async def perceive(self) -> Dict[str, Any]:
-        """🔍 FASE 1: PERCEPCIÓN
+        """FASE 1: PERCEPCIÓN
         
         Recopila información del entorno:
         - Lee mensajes de control desde la cola (pause, resume, stop, update)
@@ -93,7 +93,7 @@ class ExplorerBot(BaseAgent):
 
 
     async def decide(self, perception: Dict[str, Any]) -> Dict[str, Any]:
-        """🤔 FASE 2: DECISIÓN
+        """FASE 2: DECISIÓN
         
         Procesa la percepción y decide qué hacer:
         - Si hay comando de control, procesarlo
@@ -129,14 +129,14 @@ class ExplorerBot(BaseAgent):
         #     decision["scan_params"] = {
         #         "x": self.x,
         #         "z": self.z,
-        #         "range": self.scan_range
+        #         "range": self.rangoScan
         #     }
         
         return decision
 
 
     async def act(self, decision: Dict[str, Any]):
-        """⚡ FASE 3: ACCIÓN
+        """FASE 3: ACCIÓN
         
         Ejecuta la decisión tomada:
         - Escanea el terreno usando mc.getHeight()
@@ -160,7 +160,7 @@ class ExplorerBot(BaseAgent):
             # 
             # # Publicar map.v1 a BuilderBot
             # map_msg = MapV1(
-            #     area={"x": self.x, "z": self.z, "range": self.scan_range},
+            #     area={"x": self.x, "z": self.z, "range": self.rangoScan},
             #     heights=heights,
             #     flat_zones=self.flat_zones
             # ).to_message(origin=self.name)
@@ -276,7 +276,7 @@ def agent_process_main(in_queue: Queue, q_explorer: Queue, q_miner: Queue, q_bui
         q_builder,
         x=kwargs.get("x", 0),
         z=kwargs.get("z", 0),
-        scan_range=kwargs.get("range", 8),
+        rangoScan=kwargs.get("range", 8),
         mc=mc
     )
     
