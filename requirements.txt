@@ -1,4 +1,4 @@
-asyncio
+asyncio~=4.0.0
 dataclasses; python_version<'3.7'
-# Optional: mcpi is the Minecraft Python API; not strictly required for unit tests
-# mcpi
+
+mcpi

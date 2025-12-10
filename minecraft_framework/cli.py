@@ -1,42 +1,100 @@
-"""
-CLI esqueleto para enviar comandos a los agentes usando queues.
-
-Este CLI está pensado para uso en el terminal local (modo desarrollo). No es
-un parser completo, solo demuestra cómo traducir comandos a mensajes de control
-que se colocan en las colas de `multiprocessing.Queue`.
-"""
 from typing import Dict, Any
 
 
 def parse_command(text: str) -> Dict[str, Any]:
-    """Parsea comandos simples y devuelve una estructura interpretable.
+    """Parse simple commands and return a structured dict.
 
-    Ejemplos:
-    - '/agent stop' -> {'type': 'control', 'target': 'ALL', 'payload': {'cmd':'stop'}}
-    - '/explorer start x=0 z=0 range=8'
+    Examples:
+      - '/agent stop'
+      - '/explorer start x=0 z=0'
+      - '/miner start x=10 z=5 y=64'
     """
     text = text.strip()
     if not text:
         return {}
 
     parts = text.split()
+
+    # --------------------------------------------------
+    # Global control: /agent ...
+    # --------------------------------------------------
     if parts[0] == "/agent":
         cmd = parts[1]
         return {"type": "control", "target": "ALL", "payload": {"cmd": cmd}}
 
-    # ejemplo: /explorer start x=0 z=0
+    # --------------------------------------------------
+    # Explorer CLI example (ya lo tenías)
+    # --------------------------------------------------
     if parts[0] == "/explorer":
         sub = parts[1]
+        if sub == "start":
+            args: Dict[str, Any] = {}
+            for p in parts[2:]:
+                if "=" in p:
+                    k, v = p.split("=", 1)
+                    args[k] = int(v)
+            return {
+                "type": "control",
+                "target": "ExplorerBot",
+                "payload": {"cmd": "update", "args": args},
+            }
+        if sub == "stop":
+            return {
+                "type": "control",
+                "target": "ExplorerBot",
+                "payload": {"cmd": "stop"},
+            }
+
+    # --------------------------------------------------
+    # Miner CLI: /miner ...
+    # --------------------------------------------------
+    if parts[0] in ("/miner", "miner", "\\miner"):
+        sub = parts[1]
+
+        if sub == "pause":
+            return {"type": "control", "target": "MinerBot", "payload": {"cmd": "pause"}}
+
+        if sub == "resume":
+            return {"type": "control", "target": "MinerBot", "payload": {"cmd": "resume"}}
+
+        if sub == "status":
+            return {"type": "control", "target": "MinerBot", "payload": {"cmd": "status"}}
+
+        if sub == "set" and len(parts) >= 4 and parts[2] == "strategy":
+            strategy = parts[3]  # "vertical" | "grid" | "vein"
+            return {
+                "type": "control",
+                "target": "MinerBot",
+                "payload": {"cmd": "update", "args": {"strategy": strategy}},
+            }
+
         if sub == "start":
             args = {}
             for p in parts[2:]:
                 if "=" in p:
                     k, v = p.split("=", 1)
                     args[k] = int(v)
-            return {"type": "control", "target": "ExplorerBot", "payload": {"cmd": "update", "args": args}}
-        if sub == "stop":
-            return {"type": "control", "target": "ExplorerBot", "payload": {"cmd": "stop"}}
+            return {
+                "type": "control",
+                "target": "MinerBot",
+                "payload": {"cmd": "update", "args": {"start": args}},
+            }
 
-    # TODO: parsear resto de comandos de miner/builder/workflow
+        if sub == "fulfill":
+            return {
+                "type": "control",
+                "target": "MinerBot",
+                "payload": {"cmd": "update", "args": {"mode": "fulfill"}},
+            }
 
+        # Unknown subcommand → treat as text (or you can return a control error)
+        return {
+            "type": "text",
+            "target": "LOCAL",
+            "payload": {"text": text},
+        }
+
+    # --------------------------------------------------
+    # Default: plain text
+    # --------------------------------------------------
     return {"type": "text", "target": "LOCAL", "payload": {"text": text}}
