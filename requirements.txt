@@ -1,4 +1,0 @@
-asyncio~=4.0.0
-dataclasses; python_version<'3.7'
-
-mcpi
