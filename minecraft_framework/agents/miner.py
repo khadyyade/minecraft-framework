@@ -3,7 +3,7 @@ from typing import Dict, Any, Optional
 from mcpi.minecraft import Minecraft
 import mcpi.block as block
 from minecraft_framework.baseAgent import BaseAgent, AgentState
-from minecraft_framework.strategies.mining import MiningStrategy, VerticalMiningStrategy
+from minecraft_framework.strategies.mining import MiningStrategy, VerticalMiningStrategy, GridMiningStrategy
 from minecraft_framework.cli import parse_command
 
 
@@ -34,11 +34,13 @@ class Miner(BaseAgent):
         #  Strategy Pattern: available mining strategies
         self.strategies: Dict[str, MiningStrategy] = {
             "vertical": VerticalMiningStrategy(),
-            # "grid": GridMiningStrategy(),
+            "grid": GridMiningStrategy()
             # "vein": VeinMiningStrategy(),
         }
         # Current strategy object
         self.current_strategy: Optional[MiningStrategy]= None
+        # Current strategy name (useful to decide how to fill strategy_state)
+        self.current_strategy_name: Optional[str] = None
 
         # Internal state of the current strategy.
         self.strategy_state: Dict[str, Any] = {}
@@ -199,7 +201,10 @@ class Miner(BaseAgent):
 
                 #/miner set strategy <name>
                 if "strategy" in args:
-                    self.set_strategy(args["strategy"])
+                    # Accept optional grid dimensions when provided
+                    gw = args.get("grid_width")
+                    gl = args.get("grid_length")
+                    self.set_strategy(args["strategy"], gw, gl)
 
                 #/miner start x.z,y
                 if "start" in args:
@@ -211,36 +216,42 @@ class Miner(BaseAgent):
                         pos = None
 
                     # If a coordinate is missing, we fallback to the player position.
-                    # For x we shift +1 to avoid digging exactly under the player.
                     x = coords.get("x", pos.x + 1 if pos is not None else 0)
                     z = coords.get("z", pos.z if pos is not None else 0)
                     y = coords.get("y", pos.y if pos is not None else 64)
 
-                    self.strategy_state = {
-                        "column_x": x,
-                        "column_z": z,
-                        "start_y": y,
-                        "current_depth": 0,
-                        "max_depth": self.max_depth,
-                    }
+                    # If a strategy has been selected, use update_strategy_state to merge
+                    # the origin/column into the existing state without losing grid dims.
+                    if self.current_strategy_name:
+                        self.update_strategy_state(x, z, y)
+                    else:
+                        # No strategy selected yet: store origin keys so that a later
+                        # /miner set strategy grid will keep them.
+                        self.strategy_state.setdefault("origin_x", x)
+                        self.strategy_state.setdefault("origin_z", z)
+                        self.strategy_state.setdefault("origin_y", y)
+
                     self.start_executed = True
                     self.sent_start_warning = False
                     self.logs(
-                        f"Start mining from chat: column_x={x}, "
-                        f"column_z={z}, start_y={y}"
+                        f"Start mining from chat: origin_x={x}, "
+                        f"origin_z={z}, origin_y={y}"
                     )
 
                 # Fulfill mode: /miner fulfill
                 if args.get("mode") == "fulfill":
                     try:
                         pos = self.mc.player.getTilePos()
-                        self.strategy_state = {
-                            "column_x": pos.x + 1,
-                            "column_z": pos.z,
-                            "start_y": pos.y,
-                            "current_depth": 0,
-                            "max_depth": self.max_depth,
-                        }
+                        # Ensure we are using the vertical strategy when fulfilling
+                        self.current_strategy = self.strategies.get("vertical", self.current_strategy)
+                        self.current_strategy_name = "vertical"
+
+                        # Merge origin coordinates into the existing state instead of
+                        # replacing it (preserve any other keys)
+                        self.update_strategy_state(pos.x + 1, pos.z, pos.y)
+
+                        # Mark that a strategy has been set (vertical) and fulfill requested
+                        self.strategy_setted = True
                         self.fulfill_executed = True
                         self.sent_start_warning = False
                         self.logs("[Miner] fulfill mode activated from chat")
@@ -407,7 +418,7 @@ class Miner(BaseAgent):
             x, y, z = target
 
             # ------------------------------------------------------------------
-            #  Actual mining against the Minecraft world
+            #  MINING
             # ------------------------------------------------------------------
             block_id = self.mc.getBlock(x, y, z)
             material_found = self.block_to_material(block_id)
@@ -459,37 +470,29 @@ class Miner(BaseAgent):
     # ======================================================================
     #  UTILITIES
     # ======================================================================
-    def set_strategy(self, name: str) -> bool:
+    def set_strategy(self, name: str, grid_width: Optional[int] = None, grid_length: Optional[int] = None) -> bool:
         """
-        Change the current mining strategy.
-
-        We keep the coordinates stored in strategy_state (column_x, column_z,
-        start_y) so that a /miner start command is not overwritten.
-
-        We only reset:
-          - current_depth
-          - max_depth
-
-        Returns True if the strategy was changed, False if the name is unknown.
+        Cambia la estrategia actual sin sobrescribir coordenadas ya existentes.
+        Usa el helper para evitar duplicación.
         """
         name = name.lower()
 
-
         if name not in self.strategies:
-            self.logs(f"Unknown strategy '{name}'. No changes maede.")
-            self.mc.postToChat(f"[Miner] Unknown strategy: {name}")
+            self.logs(f"Unknown strategy '{name}'. No changes made.")
+            if self.mc:
+                self.mc.postToChat(f"[Miner] Unknown strategy: {name}")
             return False
 
+        # Set the strategy object and remember its name
         self.current_strategy = self.strategies[name]
+        self.current_strategy_name = name
 
-        # If there is an existing state, reset only the depth information.
-        if self.strategy_state:
-            self.strategy_state["current_depth"] = 0
-            self.strategy_state["max_depth"] = self.max_depth
+        # Centralized defaults
+        self._ensure_strategy_state_defaults(name, grid_width, grid_length)
 
         self.strategy_setted = True
-        self.sent_start_warning= False
-        self.sent_strategy_warning=False
+        self.sent_start_warning = False
+        self.sent_strategy_warning = False
 
         self.logs(f"Strategy changed to '{name}' (keeping coordinates).")
         if self.mc:
@@ -515,5 +518,66 @@ class Miner(BaseAgent):
         }
         return mapping.get(block_id)
 
+    def update_strategy_state(self, x: int, z: int, y: int, strategy_name: Optional[str] = None) -> None:
+        """
+        Merge de las coordenadas en strategy_state.
+
+        - Si `strategy_name` o `self.current_strategy_name` existe, resetea current_depth
+          y actualiza max_depth (inicio de la ejecución desde esa posición).
+        - Si no hay estrategia seleccionada, guarda las coordenadas con setdefault para
+          que un posterior `set_strategy` las conserve.
+        """
+        target_strategy = strategy_name or self.current_strategy_name
+
+        if target_strategy is None:
+            # No strategy yet: keep origin only if not present (compatible con comportamiento previo)
+            self.strategy_state.setdefault("origin_x", x)
+            self.strategy_state.setdefault("origin_z", z)
+            self.strategy_state.setdefault("origin_y", y)
+            return
+
+        # Con estrategia: hacer merge y reset de depth
+        self.strategy_state.update({
+            "origin_x": x,
+            "origin_z": z,
+            "origin_y": y,
+            "current_depth": 0,
+            "max_depth": self.max_depth,
+        })
+
+        # Preserve / ensure grid dimensions if grid strategy
+        if target_strategy == "grid":
+            self.strategy_state.setdefault("grid_width", self.strategy_state.get("grid_width", 3))
+            self.strategy_state.setdefault("grid_length", self.strategy_state.get("grid_length", 3))
+
+    def _ensure_strategy_state_defaults(self, name: str, grid_width: Optional[int] = None,
+                                        grid_length: Optional[int] = None) -> None:
+        """
+        Inicializa/defaults de strategy_state para la estrategia `name`.
+        Centraliza la lógica de setear current_depth, max_depth, grid dims y keys de origen.
+        """
+        # Depth defaults (común)
+        self.strategy_state.setdefault("current_depth", 0)
+        self.strategy_state["current_depth"] = 0
+        self.strategy_state["max_depth"] = self.max_depth
+
+        # Origin keys (ambas estrategias usan origin_*)
+        self.strategy_state.setdefault("origin_x", None)
+        self.strategy_state.setdefault("origin_z", None)
+        self.strategy_state.setdefault("origin_y", None)
+
+        # Grid-specific defaults
+        if name == "grid":
+            if grid_width is not None:
+                self.strategy_state["grid_width"] = grid_width
+            else:
+                self.strategy_state.setdefault("grid_width", 3)
+
+            if grid_length is not None:
+                self.strategy_state["grid_length"] = grid_length
+            else:
+                self.strategy_state.setdefault("grid_length", 3)
+
     def logs(self, param):
         self.estadoActual(str(param))
+

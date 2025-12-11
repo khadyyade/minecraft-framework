@@ -25,7 +25,7 @@ def parse_command(text: str) -> Dict[str, Any]:
     # --------------------------------------------------
     # Explorer CLI example (ya lo tenías)
     # --------------------------------------------------
-    if parts[0] == "/explorer":
+    if parts[0] == "\explorer":
         sub = parts[1]
         if sub == "start":
             args: Dict[str, Any] = {}
@@ -48,7 +48,7 @@ def parse_command(text: str) -> Dict[str, Any]:
     # --------------------------------------------------
     # Miner CLI: /miner ...
     # --------------------------------------------------
-    if parts[0] in ("/miner", "miner", "\\miner"):
+    if parts[0] == "\miner":
         sub = parts[1]
 
         if sub == "pause":
@@ -87,14 +87,12 @@ def parse_command(text: str) -> Dict[str, Any]:
                 "payload": {"cmd": "update", "args": {"mode": "fulfill"}},
             }
 
-        # Unknown subcommand → treat as text (or you can return a control error)
+        # Unknown subcommand
         return {
             "type": "text",
             "target": "LOCAL",
             "payload": {"text": text},
         }
 
-    # --------------------------------------------------
     # Default: plain text
-    # --------------------------------------------------
     return {"type": "text", "target": "LOCAL", "payload": {"text": text}}
