@@ -412,9 +412,9 @@ class Miner(BaseAgent):
                     try:
                         nbid = self.mc.getBlock(nx, ny, nz)
                     except Exception:
-                        continue
+                        pass
 
-                    if nbid == block.AIR.id:
+                    if nbid is None or nbid == block.AIR.id:
                         continue
 
                     nmat = block_to_material(nbid)

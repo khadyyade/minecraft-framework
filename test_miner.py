@@ -45,7 +45,7 @@ async def main():
         "type": "materials.requirements.v1",
         "origin": "TestHarness",
         "timestamp": 0,
-        "payload": {"dirt": 50},
+        "payload": {"gold_block": 11, "iron_block":6},
     }
     q_miner.put_nowait(fake_requirements_msg)
 
