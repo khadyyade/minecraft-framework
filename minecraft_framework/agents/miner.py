@@ -407,13 +407,18 @@ class Miner(BaseAgent):
                         continue
                     if ny <= 0:
                         continue
-                    # Evitar aire
+
+                    # Leer bloque y filtrar: solo encolar si es material objetivo
                     try:
                         nbid = self.mc.getBlock(nx, ny, nz)
                     except Exception:
-                        nbid = None
+                        continue
 
-                    if nbid is None or nbid == block.AIR.id:
+                    if nbid == block.AIR.id:
+                        continue
+
+                    nmat = block_to_material(nbid)
+                    if nmat is None or nmat not in missing:
                         continue
 
                     neighbors.append((nx, ny, nz))
