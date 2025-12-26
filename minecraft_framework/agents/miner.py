@@ -3,7 +3,7 @@ from typing import Dict, Any, Optional
 from mcpi.minecraft import Minecraft
 import mcpi.block as block
 from minecraft_framework.baseAgent import BaseAgent, AgentState
-from minecraft_framework.strategies.mining import MiningStrategy, VerticalMiningStrategy, GridMiningStrategy
+from minecraft_framework.strategies.mining import MiningStrategy, VerticalMiningStrategy, GridMiningStrategy, VeinMiningStrategy
 from minecraft_framework.block_parser import block_to_material
 
 
@@ -34,8 +34,8 @@ class Miner(BaseAgent):
         #  Strategy Pattern: available mining strategies
         self.strategies: Dict[str, MiningStrategy] = {
             "vertical": VerticalMiningStrategy(),
-            "grid": GridMiningStrategy()
-            # "vein": VeinMiningStrategy(),
+            "grid": GridMiningStrategy(),
+            "vein": VeinMiningStrategy(),
         }
         # Current strategy object
         self.current_strategy: Optional[MiningStrategy]= None
@@ -370,16 +370,57 @@ class Miner(BaseAgent):
                     "Strategy returned no target (None). "
                     "Stopping mining for now."
                 )
-                self.no_target = True
+
+                # Para 'vein' no marcamos no_target permanente: puede seguir intentando
+                # buscar nuevas vetas en ciclos posteriores.
+                if self.current_strategy_name != "vein":
+                    self.no_target = True
                 return
 
             x, y, z = target
 
-            # ------------------------------------------------------------------
-            #  MINING
-            # ------------------------------------------------------------------
+            # Guardar el último target para estrategias que usan feedback (vein)
+            self.strategy_state["last_target"] = (x, y, z)
+
             block_id = self.mc.getBlock(x, y, z)
             material_found = block_to_material(block_id)
+
+            # Guardar material encontrado para debug/futuras estrategias
+            self.strategy_state["last_material_found"] = material_found
+
+            # Si estamos en estrategia vein y hemos encontrado material objetivo,
+            # calculamos vecinos y se los pasamos a la estrategia.
+            if self.current_strategy_name == "vein" and material_found in missing:
+                neighbors = []
+                for nx, ny, nz in (
+                    (x + 1, y, z),
+                    (x - 1, y, z),
+                    (x, y + 1, z),
+                    (x, y - 1, z),
+                    (x, y, z + 1),
+                    (x, y, z - 1),
+                ):
+                    # Limitar profundidad respecto al origen
+                    oy = self.strategy_state.get("origin_y")
+                    max_depth = self.strategy_state.get("max_depth", self.max_depth)
+                    if oy is not None and (oy - ny) > max_depth:
+                        continue
+                    if ny <= 0:
+                        continue
+                    # Evitar aire
+                    try:
+                        nbid = self.mc.getBlock(nx, ny, nz)
+                    except Exception:
+                        nbid = None
+
+                    if nbid is None or nbid == block.AIR.id:
+                        continue
+
+                    neighbors.append((nx, ny, nz))
+
+                # La estrategia vein consumirá esto en el siguiente `next_target`
+                if neighbors:
+                    self.strategy_state["discovered_neighbors"] = neighbors
 
             self.logs(
                 f"Mining step at (x={x}, y={y}, z={z}): "
@@ -520,4 +561,3 @@ class Miner(BaseAgent):
 
     def logs(self, param):
         self.estadoActual(str(param))
-

@@ -1,6 +1,8 @@
 # strategies/mining.py
 
 from typing import Dict, Tuple, Optional, Any, Protocol
+from collections import deque
+from typing import Deque, Set, List
 
 
 class MiningStrategy(Protocol):
@@ -140,3 +142,160 @@ class GridMiningStrategy:
         new_state["current_row"] = current_row
 
         return target, new_state
+
+class VeinMiningStrategy:
+    """Vein mining strategy (búsqueda de vetas) basada en BFS.
+
+    Variante recomendada para este framework:
+    - La estrategia mantiene la BFS (frontier/visited) y decide el *siguiente target*.
+    - El agente (Miner) sí puede hacer `mc.getBlock()` y, cuando detecta que el bloque
+      minado es un material objetivo, puede calcular/filtrar vecinos y pasarlos a la
+      estrategia a través del estado.
+
+    Cómo pasar vecinos desde el agente:
+      - state['discovered_neighbors'] = [(x,y,z), ...]
+    La estrategia los consume y los añade a `frontier`.
+
+    Esto evita que la estrategia suponga vecinos a ciegas y permite filtrar por:
+    - rango de profundidad
+    - bloque sólido/aire
+    - o incluso por tipo de mena (si quieres)
+
+    Campos de estado usados:
+      - frontier: lista de candidatos BFS
+      - visited: lista de visitados
+      - discovered_neighbors: lista temporal aportada por el agente (se consume)
+      - scan_cursor/scan_step: fallback scan
+    """
+
+    def next_target(
+        self,
+        state: Dict[str, Any],
+        missing: Dict[str, int],
+    ) -> Tuple[Optional[Tuple[int, int, int]], Dict[str, Any]]:
+        new_state = dict(state)
+
+        origin_x = new_state.get("origin_x")
+        origin_z = new_state.get("origin_z")
+        origin_y = new_state.get("origin_y")
+        max_depth = new_state.get("max_depth", 50)
+
+        if origin_x is None or origin_z is None or origin_y is None:
+            return None, new_state
+
+        frontier_list = new_state.get("frontier") or []
+        visited_list = new_state.get("visited") or []
+
+        def _to_pos(p: Any) -> Optional[Tuple[int, int, int]]:
+            if not isinstance(p, (list, tuple)) or len(p) != 3:
+                return None
+            try:
+                return int(p[0]), int(p[1]), int(p[2])
+            except Exception:
+                return None
+
+        frontier: Deque[Tuple[int, int, int]] = deque(
+            pos for pos in (_to_pos(p) for p in frontier_list) if pos is not None
+        )
+        visited: Set[Tuple[int, int, int]] = set(
+            pos for pos in (_to_pos(p) for p in visited_list) if pos is not None
+        )
+
+        # 1) Consumir vecinos descubiertos por el agente
+        discovered = new_state.pop("discovered_neighbors", None)
+        if isinstance(discovered, list):
+            for p in discovered:
+                if not isinstance(p, (list, tuple)) or len(p) != 3:
+                    continue
+                x, y, z = int(p[0]), int(p[1]), int(p[2])
+                if not self._within_depth(origin_y, y, max_depth):
+                    continue
+                if (x, y, z) in visited:
+                    continue
+                frontier.append((x, y, z))
+
+        # 2) Sacar siguiente target de la frontier
+        while frontier:
+            x, y, z = frontier.popleft()
+            if (x, y, z) in visited:
+                continue
+            if not self._within_depth(origin_y, y, max_depth):
+                continue
+            visited.add((x, y, z))
+            new_state["frontier"] = list(frontier)
+            new_state["visited"] = list(visited)
+            return (x, y, z), new_state
+
+        # 3) Si no hay frontier, fallback scan
+        seed = self._next_scan_seed(new_state, origin_x, origin_y, origin_z, max_depth)
+        if seed is None:
+            new_state["frontier"] = []
+            new_state["visited"] = list(visited)
+            return None, new_state
+
+        sx, sy, sz = seed
+        if (sx, sy, sz) not in visited:
+            visited.add((sx, sy, sz))
+            new_state["frontier"] = []
+            new_state["visited"] = list(visited)
+            return (sx, sy, sz), new_state
+
+        new_state["frontier"] = []
+        new_state["visited"] = list(visited)
+        return None, new_state
+
+    @staticmethod
+    def _neighbors6(p: Tuple[int, int, int]) -> List[Tuple[int, int, int]]:
+        x, y, z = p
+        return [
+            (x + 1, y, z),
+            (x - 1, y, z),
+            (x, y + 1, z),
+            (x, y - 1, z),
+            (x, y, z + 1),
+            (x, y, z - 1),
+        ]
+
+    @staticmethod
+    def _within_depth(origin_y: int, y: int, max_depth: int) -> bool:
+        return y > 0 and (origin_y - y) <= max_depth
+
+    @staticmethod
+    def _next_scan_seed(
+        state: Dict[str, Any],
+        ox: int,
+        oy: int,
+        oz: int,
+        max_depth: int,
+    ) -> Optional[Tuple[int, int, int]]:
+        """Escaneo simple alrededor del origen: espiral 2D con una pequeña bajada.
+
+        Esto es un fallback para encontrar el primer bloque de una veta.
+        """
+        cursor = state.get("scan_cursor")
+        if cursor is None:
+            # arrancamos al lado del jugador
+            state["scan_cursor"] = (ox, oy, oz)
+            state["scan_step"] = 0
+            return (ox, oy, oz)
+
+        x, y, z = cursor
+        step = int(state.get("scan_step", 0))
+
+        # patrón simple: x+1, z+1, x-1, z-1, y-1 (repite)
+        moves = [
+            (1, 0, 0),
+            (0, 0, 1),
+            (-1, 0, 0),
+            (0, 0, -1),
+            (0, -1, 0),
+        ]
+        dx, dy, dz = moves[step % len(moves)]
+        nx, ny, nz = x + dx, y + dy, z + dz
+
+        if ny <= 0 or (oy - ny) > max_depth:
+            return None
+
+        state["scan_cursor"] = (nx, ny, nz)
+        state["scan_step"] = step + 1
+        return (nx, ny, nz)
