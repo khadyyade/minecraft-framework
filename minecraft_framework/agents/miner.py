@@ -4,7 +4,7 @@ from mcpi.minecraft import Minecraft
 import mcpi.block as block
 from minecraft_framework.baseAgent import BaseAgent, AgentState
 from minecraft_framework.strategies.mining import MiningStrategy, VerticalMiningStrategy, GridMiningStrategy
-from minecraft_framework.cli import parse_command
+from minecraft_framework.block_parser import block_to_material
 
 
 class Miner(BaseAgent):
@@ -65,17 +65,15 @@ class Miner(BaseAgent):
         Perception phase.
 
         - Reads messages from the input queue (requirements, control).
-        - Reads chat commands (/miner ...) from Minecraft.
         - Builds and returns a perception dictionary to be used by decide().
+
+        Note: Chat polling is now handled by ChatRouter, not by individual bots.
         """
 
         # 1) Process all available messages in the multiprocessing queue
         await self._perceive_queue_messages()
 
-        # 2) Process chat commands written inside Minecraft (/miner ...)
-        self._perceive_chat_commands()
-
-        # 3) Build the perception object
+        # 2) Build the perception object
         perception = self._build_perception()
         return perception
 
@@ -87,6 +85,8 @@ class Miner(BaseAgent):
           - self.requirements  (functional messages from Builder)
           - self.last_control  (control commands)
           - agent state        (via gestionarControles)
+
+        Messages now come from ChatRouter which routes parsed chat commands to this queue.
         """
         while True:
             msg = await self.leerMensaje()
@@ -99,13 +99,91 @@ class Miner(BaseAgent):
                 self.logs("Message not recognised (it is not a dictionary)")
                 continue
 
-            # Standard control message produced by cli.parse_command
-            # Expected shape: { 'type': 'control', 'target': 'MinerBot', 'payload': { 'cmd': 'pause' } }
+            # Standard control message produced by cli.parse_command (via ChatRouter)
+            # Expected shape: { 'type': 'control', 'target': 'MinerBot', 'payload': { 'cmd': '...' } }
             if msg.get("type") == "control":
                 payload = msg.get("payload", {})
                 if isinstance(payload, dict):
-                    self.gestionarControles(payload)
-                    self.last_control = payload.get("cmd", "")
+                    cmd = payload.get("cmd")
+
+                    # Basic control commands: pause / resume / stop
+                    if cmd in ("pause", "resume", "stop"):
+                        self.gestionarControles(payload)
+                        self.last_control = cmd
+                        continue
+
+                    # /miner status: send a summary in the Minecraft chat
+                    if cmd == "status":
+                        if self.mc:
+                            self.mc.postToChat(
+                                f"[Miner] state={self.state.name}, inventory={self.inventory}"
+                            )
+                        continue
+
+                    # /miner set strategy, /miner start, /miner fulfill
+                    if cmd == "update":
+                        args = payload.get("args", {})
+
+                        # /miner set strategy <name>
+                        if "strategy" in args:
+                            # Accept optional grid dimensions when provided
+                            gw = args.get("grid_width")
+                            gl = args.get("grid_length")
+                            self.set_strategy(args["strategy"], gw, gl)
+
+                        # /miner start x,z,y
+                        if "start" in args:
+                            coords = args["start"]
+                            pos = None
+                            try:
+                                pos = self.mc.player.getTilePos()
+                            except Exception:
+                                pos = None
+
+                            # If a coordinate is missing, we fallback to the player position.
+                            x = coords.get("x", pos.x + 1 if pos is not None else 0)
+                            z = coords.get("z", pos.z if pos is not None else 0)
+                            y = coords.get("y", pos.y if pos is not None else 64)
+
+                            # If a strategy has been selected, use update_strategy_state to merge
+                            # the origin/column into the existing state without losing grid dims.
+                            if self.current_strategy_name:
+                                self.update_strategy_state(x, z, y)
+                            else:
+                                # No strategy selected yet: store origin keys so that a later
+                                # /miner set strategy grid will keep them.
+                                self.strategy_state.setdefault("origin_x", x)
+                                self.strategy_state.setdefault("origin_z", z)
+                                self.strategy_state.setdefault("origin_y", y)
+
+                            self.start_executed = True
+                            self.sent_start_warning = False
+                            self.logs(
+                                f"Start mining from command: origin_x={x}, "
+                                f"origin_z={z}, origin_y={y}"
+                            )
+
+                        # Fulfill mode: /miner fulfill
+                        if args.get("mode") == "fulfill":
+                            try:
+                                pos = self.mc.player.getTilePos()
+                                # Ensure we are using the vertical strategy when fulfilling
+                                self.current_strategy = self.strategies.get("vertical", self.current_strategy)
+                                self.current_strategy_name = "vertical"
+
+                                # Merge origin coordinates into the existing state instead of
+                                # replacing it (preserve any other keys)
+                                self.update_strategy_state(pos.x + 1, pos.z, pos.y)
+
+                                # Mark that a strategy has been set (vertical) and fulfill requested
+                                self.strategy_setted = True
+                                self.fulfill_executed = True
+                                self.sent_start_warning = False
+                                self.logs("[Miner] fulfill mode activated from command")
+                            except Exception:
+                                self.logs("Could not activate fulfill mode (no player position)")
+
+                    self.last_control = cmd
                 else:
                     self.logs("Control message payload not a dict")
                 continue
@@ -138,126 +216,6 @@ class Miner(BaseAgent):
             else:
                 self.logs(f"Received an unknown message type: {msg_type}")
 
-    def _perceive_chat_commands(self) -> None:
-        """
-        Read and interpret Minecraft chat commands for the Miner.
-
-        Expected commands:
-          /miner pause
-          /miner resume
-          /miner stop
-          /miner status
-          /miner set strategy vertical
-          /miner start x=10 z=5 y=64
-          /miner fulfill
-        """
-        # If no MC connection, nothing to do
-        if self.mc is None:
-            return
-
-        # Poll chat posts from the Minecraft world
-        for post in self.mc.events.pollChatPosts():
-            text = post.message.strip()
-
-            # Log the raw chat text for debugging
-            self.logs(f"Chat raw: {text}")
-
-            # Let the CLI parser convert text into a structured control message
-            cmd_msg = parse_command(text)
-            # Log parsed command for debugging
-            self.logs(f"Parsed command: {cmd_msg}")
-            if not isinstance(cmd_msg, dict):
-                continue
-
-            # Ensure the command is addressed to this bot
-            target = cmd_msg.get("target")
-            if target not in (self.name, "MinerBot", "ALL"):
-                continue
-
-            if cmd_msg.get("type") != "control":
-                continue
-
-            payload = cmd_msg.get("payload", {})
-            cmd = payload.get("cmd")
-
-            #  Basic control commands: pause / resume / stop
-            if cmd in ("pause", "resume", "stop"):
-                control = {"cmd": cmd}
-                self.gestionarControles(control)
-                self.last_control = cmd
-                continue
-
-            #  /miner status: send a summary in the Minecraft chat
-            if cmd == "status":
-                # Use agent state name, not estadoActual method
-                self.mc.postToChat(
-                    f"[Miner] state={self.state.name}, inventory={self.inventory}"
-                )
-                continue
-
-            #  /miner set strategy, /miner start, /miner fulfill
-            if cmd == "update":
-                args = payload.get("args", {})
-
-                #/miner set strategy <name>
-                if "strategy" in args:
-                    # Accept optional grid dimensions when provided
-                    gw = args.get("grid_width")
-                    gl = args.get("grid_length")
-                    self.set_strategy(args["strategy"], gw, gl)
-
-                #/miner start x.z,y
-                if "start" in args:
-                    coords = args["start"]
-                    pos = None
-                    try:
-                        pos = self.mc.player.getTilePos()
-                    except Exception:
-                        pos = None
-
-                    # If a coordinate is missing, we fallback to the player position.
-                    x = coords.get("x", pos.x + 1 if pos is not None else 0)
-                    z = coords.get("z", pos.z if pos is not None else 0)
-                    y = coords.get("y", pos.y if pos is not None else 64)
-
-                    # If a strategy has been selected, use update_strategy_state to merge
-                    # the origin/column into the existing state without losing grid dims.
-                    if self.current_strategy_name:
-                        self.update_strategy_state(x, z, y)
-                    else:
-                        # No strategy selected yet: store origin keys so that a later
-                        # /miner set strategy grid will keep them.
-                        self.strategy_state.setdefault("origin_x", x)
-                        self.strategy_state.setdefault("origin_z", z)
-                        self.strategy_state.setdefault("origin_y", y)
-
-                    self.start_executed = True
-                    self.sent_start_warning = False
-                    self.logs(
-                        f"Start mining from chat: origin_x={x}, "
-                        f"origin_z={z}, origin_y={y}"
-                    )
-
-                # Fulfill mode: /miner fulfill
-                if args.get("mode") == "fulfill":
-                    try:
-                        pos = self.mc.player.getTilePos()
-                        # Ensure we are using the vertical strategy when fulfilling
-                        self.current_strategy = self.strategies.get("vertical", self.current_strategy)
-                        self.current_strategy_name = "vertical"
-
-                        # Merge origin coordinates into the existing state instead of
-                        # replacing it (preserve any other keys)
-                        self.update_strategy_state(pos.x + 1, pos.z, pos.y)
-
-                        # Mark that a strategy has been set (vertical) and fulfill requested
-                        self.strategy_setted = True
-                        self.fulfill_executed = True
-                        self.sent_start_warning = False
-                        self.logs("[Miner] fulfill mode activated from chat")
-                    except Exception:
-                        self.logs("Could not activate fulfill mode (no player position)")
-
     def _build_perception(self) -> Dict[str, Any]:
         """
         Build the perception dictionary passed to decide().
@@ -289,9 +247,9 @@ class Miner(BaseAgent):
         if not self.can_mine():
             decision["type"] = "NO_OP"
             if not self.strategy_setted:
-                decision["reason"]="Strategy not defined (use /miner set strategy <strategy>)"
+                decision["reason"] = "Strategy not defined (use \\miner set strategy <strategy>)"
             if not (self.start_executed or self.fulfill_executed):
-                decision["reason"]="Start mining from chat (use /miner start <x, z, y> or use /miner fulfill)"
+                decision["reason"] = "Start mining from chat (use \\miner start x=<x> z=<z> y=<y> or use \\miner fulfill)"
             return decision
 
         # 1) If a pause or stop control has been received, do not plan anything.
@@ -421,7 +379,7 @@ class Miner(BaseAgent):
             #  MINING
             # ------------------------------------------------------------------
             block_id = self.mc.getBlock(x, y, z)
-            material_found = self.block_to_material(block_id)
+            material_found = block_to_material(block_id)
 
             self.logs(
                 f"Mining step at (x={x}, y={y}, z={z}): "
@@ -499,24 +457,6 @@ class Miner(BaseAgent):
             self.mc.postToChat(f"[Miner] Strategy set to {name}")
         return True
 
-    def block_to_material(self, block_id: int) -> Optional[str]:
-        """
-        Map a Minecraft block_id to a logical material name used in requirements.
-
-        Returns:
-          - a string like "stone", "dirt", "sand", ...
-          - or None if the block is not relevant for our requirements.
-        """
-        mapping = {
-            block.STONE.id: "stone",
-            block.COBBLESTONE.id: "cobblestone",
-            block.DIRT.id: "dirt",
-            block.GRASS.id: "grass",
-            block.SAND.id: "sand",
-            block.WOOD.id: "wood",
-            block.GRAVEL.id: "gravel",
-        }
-        return mapping.get(block_id)
 
     def update_strategy_state(self, x: int, z: int, y: int, strategy_name: Optional[str] = None) -> None:
         """
