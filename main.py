@@ -1,75 +1,135 @@
-#!/usr/bin/env python3
-import asyncio
-import multiprocessing as mp
+# Importamos las librerías necesarias
+# Se ha decidido gestionar cada Agente como un proceso
+# Internamente los procesos trabajan con funciones de la librería asyncio
 from multiprocessing import Process, Queue
-from typing import Optional
+import time
+import json
+import importlib
 
 
-def _connect_minecraft(host: Optional[str] = None, port: Optional[int] = None):
-    from mcpi.minecraft import Minecraft
+# Función para obtener un agente usando reflection (importlib) (Punto 3)
+# Parametro: nombre del agente
+# Salida: clase del agente
+def obtenerClaseAgente(agent_name: str):
 
-    if host is not None and port is not None:
-        return Minecraft.create(host, port)
-    return Minecraft.create()
-
-
-def _miner_process(in_q: Queue, q_explorer: Queue, q_miner: Queue, q_builder: Queue):
-    from minecraft_framework.agents.miner import Miner
-
-    bot = Miner("MinerBot", in_q, q_explorer, q_miner, q_builder)
-    asyncio.run(bot.iniciarAgente())
+    module = importlib.import_module(f"minecraft_framework.agents.{agent_name}")
+    # Obtener la clase principal del módulo (ExplorerBot, MinerBot, BuilderBot)
+    class_name = agent_name.capitalize() + "Bot"
+    return getattr(module, class_name)
 
 
-def _explorer_process(in_q: Queue, q_explorer: Queue, q_miner: Queue, q_builder: Queue):
-    from minecraft_framework.agents.explorer import ExplorerBot
+# Función que inicia a los 3 agentes
+# Parametro 1 (mc_host) indica el host del servidor, por defecto localhost
+# Parametro 2 (mc_port) indica el puerto del servidor, por defecto 4711
+#   [11:38:58 INFO]: [RaspberryJuice] Enabling RaspberryJuice v1.10
+#   [11:38:58 INFO]: [RaspberryJuice] Using port 4711
 
-    bot = ExplorerBot("ExplorerBot", in_q, q_explorer, q_miner, q_builder)
-    asyncio.run(bot.iniciarAgente())
+def iniciarAgentes(mc_host="localhost", mc_port=4711, x=0, z=0, scan_range=8, tam_planicie=4):
+    
+    # Cargar las clases de los agentes usando reflection
+    ExplorerBot = obtenerClaseAgente("explorer")
+    MinerBot = obtenerClaseAgente("miner")
+    BuilderBot = obtenerClaseAgente("builder")
 
-
-def _builder_process(in_q: Queue, q_explorer: Queue, q_miner: Queue, q_builder: Queue):
-    from minecraft_framework.agents.builder import BuilderBot
-
-    bot = BuilderBot("BuilderBot", in_q, q_explorer, q_miner, q_builder)
-    asyncio.run(bot.iniciarAgente())
-
-
-async def async_main():
+    # Crear las colas (cada agente tiene la suya)
+    q_explorer = Queue()
     q_miner = Queue()
     q_builder = Queue()
-    q_explorer = Queue()
 
-    procs = [
-        Process(target=_miner_process, args=(q_miner, q_explorer, q_miner, q_builder), name="MinerBot"),
-        Process(target=_builder_process, args=(q_builder, q_explorer, q_miner, q_builder), name="BuilderBot"),
-        Process(target=_explorer_process, args=(q_explorer, q_explorer, q_miner, q_builder), name="ExplorerBot"),
-    ]
+    # Parámetros de conexión a Minecraft que se pasan a todos los agentes
+    # Contiene: mc_host (ej: "localhost") y mc_port (ej: 4711)
+    minecraft_connection_params = {
+        "mc_host": mc_host,
+        "mc_port": mc_port
+    }
 
-    for p in procs:
-        p.start()
+    # Parámetros que necesita cada agente para funcionar
+    # Hay que intentar pasar los params por terminal tambien
+    explorer_kwargs = {**minecraft_connection_params, "x": x, "z": z, "range": scan_range, "size": tam_planicie}
+    miner_kwargs = {**minecraft_connection_params, "strategy": "vertical"}
+    builder_kwargs = {**minecraft_connection_params}
 
-    from minecraft_framework.cli import ChatRouter
 
-    mc = _connect_minecraft()
-    router = ChatRouter(mc, q_miner=q_miner, q_builder=q_builder, q_explorer=q_explorer)
+    # Lanzar procesos de cada agente usando las clases obtenidas del registry
+    # Cada agente se instancia con sus colas y parámetros específicos
+    # args: (cola_propia, cola_explorer, cola_miner, cola_builder)
+    p_explorer = Process(target=ExplorerBot.agent_process_main, args=(q_explorer, q_explorer, q_miner, q_builder), kwargs=explorer_kwargs)
+    p_miner = Process(target=MinerBot.agent_process_main, args=(q_miner, q_explorer, q_miner, q_builder), kwargs=miner_kwargs)
+    p_builder = Process(target=BuilderBot.agent_process_main, args=(q_builder, q_explorer, q_miner, q_builder), kwargs=builder_kwargs)
 
+    # Una vez creados solo queda iniciarlos
+    # Al hacer .start() se ejecuta el método agent_process_main de ese agente
+    p_explorer.start()
+    p_miner.start()
+    p_builder.start()
+
+    # Con este bucle vamos a controlar los mensajes que circulan por las mailboxes
+    # Y a detener los procesos si se pulas CTRL+C
     try:
-        await router.run()
+        print("Todos los agentes se han inciado. Puedes detener con CTRL+C")
+        # Recibimos los mensajes desde las colas y los mostramos por pantalla
+        while True:
+            # Iterar por todas las colas
+            for name, q in [("Explorer", q_explorer), ("Miner", q_miner), ("Builder", q_builder)]:
+                # Cuando encontremos una cola no vacia
+                while not q.empty():
+
+                    # Obtener el mensaje de la cola
+                    raw = q.get()
+
+                    # Mostrammos como JSON
+                    msg = json.loads(raw)
+                    print(f"[Main] Message from {name}: {msg}")
+                    
+            time.sleep(0.5)
+    
+    # Cuando se pulsa CTRL+C cancelamos todo
     except KeyboardInterrupt:
-        pass
-    finally:
-        router.stop()
-        for p in procs:
-            if p.is_alive():
-                p.terminate()
-        for p in procs:
-            p.join(timeout=2)
+        print("Stopping agents...")
+        p_explorer.terminate()
+        p_miner.terminate()
+        p_builder.terminate()
+        p_explorer.join(timeout=1)
+        p_miner.join(timeout=1)
+        p_builder.join(timeout=1)
 
-
-def main():
-    mp.set_start_method("spawn", force=True)
-    asyncio.run(async_main())
-
+# Main de todo el programa python que lee si hay parámetros concretos por terminal para lanzar los agentes
 
 if __name__ == "__main__":
-    main()
+    import sys
+    
+    # Valores por defecto
+    param_mc_host = "localhost"
+    param_mc_port = 4711
+    param_x = 0
+    param_z = 0
+    param_scan_range = 8
+    param_tam_planicie = 4
+    
+    # Leer parámetros desde terminal
+    # Uso: python main.py --host=localhost --port=4711 --x=0 --z=0 --range=8 --size=4
+    for arg in sys.argv[1:]:
+        if arg.startswith("--host="):
+            param_mc_host = arg.split("=", 1)[1]
+        elif arg.startswith("--port="):
+            param_mc_port = int(arg.split("=", 1)[1])
+        elif arg.startswith("--x="):
+            param_x = int(arg.split("=", 1)[1])
+        elif arg.startswith("--z="):
+            param_z = int(arg.split("=", 1)[1])
+        elif arg.startswith("--range="):
+            param_scan_range = int(arg.split("=", 1)[1])
+        elif arg.startswith("--size="):
+            param_tam_planicie = int(arg.split("=", 1)[1])
+    
+    print(f"Iniciando agentes...")
+    print(f"Conectando al servidor de Minecraft en: {param_mc_host}:{param_mc_port}")
+    # Lanzamos la función principal que inicia los agentes
+    iniciarAgentes(
+        mc_host=param_mc_host,
+        mc_port=param_mc_port,
+        x=param_x,
+        z=param_z,
+        scan_range=param_scan_range,
+        tam_planicie=param_tam_planicie
+    )
