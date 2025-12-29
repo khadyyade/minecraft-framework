@@ -3,7 +3,7 @@ from typing import Dict, Any, Optional
 from mcpi.minecraft import Minecraft
 import mcpi.block as block
 from minecraft_framework.baseAgent import BaseAgent, AgentState
-from minecraft_framework.strategies.mining import MiningStrategy, VerticalMiningStrategy, GridMiningStrategy, VeinMiningStrategy
+from minecraft_framework.strategies import MiningStrategy, VerticalMiningStrategy, GridMiningStrategy, VeinMiningStrategy
 from minecraft_framework.block_parser import block_to_material
 
 
@@ -66,8 +66,6 @@ class Miner(BaseAgent):
 
         - Reads messages from the input queue (requirements, control).
         - Builds and returns a perception dictionary to be used by decide().
-
-        Note: Chat polling is now handled by ChatRouter, not by individual bots.
         """
 
         # 1) Process all available messages in the multiprocessing queue
@@ -95,18 +93,14 @@ class Miner(BaseAgent):
             if msg is None or msg == "":
                 break
 
-            if not isinstance(msg, dict):
-                self.logs("Message not recognised (it is not a dictionary)")
-                continue
-
-            # Standard control message produced by cli.parse_command (via ChatRouter)
-            # Expected shape: { 'type': 'control', 'target': 'MinerBot', 'payload': { 'cmd': '...' } }
+            # Control message
+            # Shape: { 'type': 'control', 'target': 'MinerBot', 'payload': { 'cmd': '...' } }
             if msg.get("type") == "control":
                 payload = msg.get("payload", {})
                 if isinstance(payload, dict):
                     cmd = payload.get("cmd")
 
-                    # Basic control commands: pause / resume / stop
+                    # pause, resume or stop
                     if cmd in ("pause", "resume", "stop"):
                         self.gestionarControles(payload)
                         self.last_control = cmd

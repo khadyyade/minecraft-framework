@@ -3,6 +3,8 @@
 Actualmente:
 - `block_to_material(block_id)`: traducción de block_id (mcpi) a nombre lógico
   de material usado en requirements/BOM.
+- `material_to_block(material_name)`: traducción inversa de nombre de material
+  a block_id (mcpi) para construcción.
 
 La lógica está externalizada para que la puedan reutilizar todos los bots.
 """
@@ -142,6 +144,16 @@ def get_default_block_mapping() -> Dict[int, str]:
 
 _DEFAULT_MAPPING: Dict[int, str] = get_default_block_mapping()
 
+# Crear el mapping inverso: material -> block_id
+_INVERSE_MAPPING: Dict[str, int] = {v: k for k, v in _DEFAULT_MAPPING.items()}
+
+# Aliases comunes para materiales
+_MATERIAL_ALIASES: Dict[str, str] = {
+    "wood_planks": "planks",
+    "brick_block": "bricks",
+    "stone_brick": "stone_bricks",
+}
+
 
 def block_to_material(block_id: int, mapping: Optional[Dict[int, str]] = None) -> Optional[str]:
     """Convierte un `block_id` (mcpi) a un nombre lógico de material.
@@ -155,4 +167,31 @@ def block_to_material(block_id: int, mapping: Optional[Dict[int, str]] = None) -
     """
     m = _DEFAULT_MAPPING if mapping is None else mapping
     return m.get(block_id)
+
+
+def material_to_block(material_name: str, mapping: Optional[Dict[str, int]] = None) -> Optional[int]:
+    """Convierte un nombre de material a `block_id` (mcpi).
+
+    Args:
+        material_name: Nombre lógico del material (ej: "stone", "planks", "gold_block")
+        mapping: mapping alternativo (por ejemplo, para tests)
+
+    Returns:
+        Block ID (int) o None si no está mapeado.
+    """
+    m = _INVERSE_MAPPING if mapping is None else mapping
+
+    # Intentar obtener directamente
+    block_id = m.get(material_name)
+    if block_id is not None:
+        return block_id
+
+    # Intentar con aliases
+    alias = _MATERIAL_ALIASES.get(material_name)
+    if alias:
+        return m.get(alias)
+
+    # No encontrado
+    return None
+
 

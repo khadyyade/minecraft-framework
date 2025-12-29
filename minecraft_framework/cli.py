@@ -22,14 +22,14 @@ def parse_command(text: str) -> Dict[str, Any]:
     # --------------------------------------------------
     # Global control: \agent ...
     # --------------------------------------------------
-    if parts[0] == "\agent":
+    if parts[0] == "$agent":
         cmd = parts[1] if len(parts) > 1 else ""
         return {"type": "control", "target": "ALL", "payload": {"cmd": cmd}}
 
     # --------------------------------------------------
     # Explorer CLI: \explorer ...
     # --------------------------------------------------
-    if parts[0] == "\explorer":
+    if parts[0] == "$explorer":
         sub = parts[1] if len(parts) > 1 else ""
         if sub == "start":
             args: Dict[str, Any] = {}
@@ -56,7 +56,7 @@ def parse_command(text: str) -> Dict[str, Any]:
     # --------------------------------------------------
     # Miner CLI: \miner ...
     # --------------------------------------------------
-    if parts[0] == "\miner":
+    if parts[0] == "$miner":
         sub = parts[1] if len(parts) > 1 else ""
 
         if sub == "pause":
@@ -116,14 +116,53 @@ def parse_command(text: str) -> Dict[str, Any]:
     # --------------------------------------------------
     # Builder CLI: \builder ...
     # --------------------------------------------------
-    if parts[0] == "\builder":
+    if parts[0] == "$builder":
         sub = parts[1] if len(parts) > 1 else ""
+
+        # Control commands
         if sub == "pause":
             return {"type": "control", "target": "BuilderBot", "payload": {"cmd": "pause"}}
         if sub == "resume":
             return {"type": "control", "target": "BuilderBot", "payload": {"cmd": "resume"}}
         if sub == "stop":
             return {"type": "control", "target": "BuilderBot", "payload": {"cmd": "stop"}}
+        if sub == "status":
+            return {"type": "control", "target": "BuilderBot", "payload": {"cmd": "status"}}
+
+        # Plan management: \builder plan list | \builder plan set <template>
+        if sub == "plan":
+            subsub = parts[2] if len(parts) > 2 else ""
+
+            if subsub == "list":
+                return {
+                    "type": "control",
+                    "target": "BuilderBot",
+                    "payload": {"cmd": "update", "args": {"list": True}}
+                }
+
+            if subsub == "set" and len(parts) > 3:
+                template_name = parts[3]
+                return {
+                    "type": "control",
+                    "target": "BuilderBot",
+                    "payload": {"cmd": "update", "args": {"plan set": True, 1: template_name}}
+                }
+
+        # Bill of Materials: \builder bom
+        if sub == "bom":
+            return {
+                "type": "control",
+                "target": "BuilderBot",
+                "payload": {"cmd": "update", "args": {"bom": True}}
+            }
+
+        # Build command: \builder build
+        if sub == "build":
+            return {
+                "type": "control",
+                "target": "BuilderBot",
+                "payload": {"cmd": "update", "args": {"build": True}}
+            }
 
     # Default: plain text
     return {"type": "text", "target": "LOCAL", "payload": {"text": text}}

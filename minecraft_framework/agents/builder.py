@@ -1,152 +1,382 @@
-"""
-BuilderBot skeleton.
-
-Responsabilidades:
-- Recibir `map.v1` de ExplorerBot y generar un plan / BOM.
-- Publicar `materials.requirements.v1` hacia MinerBot.
-- Recibir `inventory.v1` y, cuando haya materiales suficientes, ejecutar la construcción
-  (simulada) publicando `build.v1` con progreso.
-
-Muchos pasos están indicados como TODO para que los alumnos implementen los detalles.
-"""
-import asyncio
+from minecraft_framework.baseAgent import BaseAgent
+from minecraft_framework.block_parser import material_to_block
+from mcpi.minecraft import Minecraft
+import mcpi.block as block
+from typing import Dict, Any, Optional
 from multiprocessing import Queue
-from typing import Dict, Any
+from collections import defaultdict
+import asyncio
+import csv
+import os
 
-from minecraft_framework.baseAgent import BaseAgent, AgentState
-from minecraft_framework.messages import MaterialsRequirementsV1, BuildV1
-
-
-class BuilderBot(BaseAgent):
-    def __init__(self, name: str, in_queue: Queue, q_explorer: Queue, q_miner: Queue, q_builder: Queue, mc=None):
+class BuilerBot(BaseAgent):
+    def __init__(
+            self,
+            name: str,
+            in_queue: Queue,
+            q_explorer: Queue,
+            q_miner: Queue,
+            q_builder: Queue,
+    ):
         super().__init__(name, in_queue, q_explorer, q_miner, q_builder)
-        self.current_plan = None
-        self.bom = {}
-        self.inventory = {}
-        self.mc = mc  # Minecraft connection (opcional)
 
-    async def _run_task(self):
-        # Bucle principal: espera map.v1, genera BOM, espera materiales y construye
-        self.estadoActual("Builder started and waiting for map.v1 messages")
-        while not self._stop_requested:
-            incoming = await self.leerMensaje()
-            if incoming:
-                if isinstance(incoming, dict) and incoming.get("type") == "map.v1":
-                    payload = incoming.get("payload", {})
-                    await self._handle_map(payload)
-                elif isinstance(incoming, dict) and incoming.get("type") == "inventory.v1":
-                    payload = incoming.get("payload", {})
-                    await self._handle_inventory(payload)
-                elif isinstance(incoming, dict) and incoming.get("type") == "control":
-                    self.gestionarControles(incoming.get("payload", {}))
-                else:
-                    self.estadoActual(f"Builder got unknown message: {incoming}")
+        # Connection to Minecraft
+        self.mc = Minecraft.create()
 
-            await asyncio.sleep(0.3)
+        # Control state
+        self.last_control: Optional[str] = None
 
-    async def _handle_map(self, payload: Dict[str, Any]):
-        # Recibe mapa de ExplorerBot, genera plan de construcción y publica BOM
-        # TODO: analizar heights y flat_zones para generar plan
-        self.estadoActual("Received map.v1; generating simple plan and BOM (simulated)")
-        # Plan simple de ejemplo: construir 10x10 de stone
-        self.current_plan = {"template": "simple_square", "params": {"w": 10, "d": 10}}
-        self.bom = {"stone": 100}
-        msg = MaterialsRequirementsV1(bom=self.bom).to_message(origin=self.name)
-        self.enviarMensaje("MinerBot", msg)
-        self.estadoActual(f"Published materials.requirements.v1 with BOM: {self.bom}")
+        # Template and building state
+        self.current_template: Optional[Dict[str, Any]] = None
+        self.bom: Optional[Dict[str, int]] = None
+        self.bom_published: bool = False
 
-    async def _handle_inventory(self, payload: Dict[str, Any]):
-        # Recibe actualización de inventario de MinerBot e inicia construcción si hay suficientes materiales
-        inv = payload.get("inventory", {})
-        complete = payload.get("complete", False)
-        self.inventory.update(inv)
-        self.estadoActual(f"Inventory update: {self.inventory}; complete={complete}")
-        # comprobar si tenemos suficientes materiales
-        if all(self.inventory.get(k, 0) >= v for k, v in self.bom.items()):
-            await self._start_build()
+        # Materials and building flags
+        self.available_materials: Optional[Dict[str, int]] = None
+        self.pending_build: bool = False
+        self.can_build: bool = False
 
-    async def _start_build(self):
-        # Ejecuta la construcción: obtiene posición del jugador, coloca bloques y publica progreso
-        self.estadoActual("Starting build. Placing blocks...")
-        total_steps = 10
-        
-        # Si tenemos conexión real, obtener posición del jugador como base
-        base_x, base_y, base_z = 0, 64, 0
-        if self.mc is not None:
-            try:
-                pos = self.mc.player.getTilePos()
-                base_x, base_y, base_z = pos.x + 5, pos.y, pos.z
-                self.mc.postToChat(f"BuilderBot: Iniciando construcción en ({base_x}, {base_y}, {base_z})")
-            except Exception as e:
-                self.estadoActual(f"Error getting player position: {e}")
-        
-        for i in range(total_steps):
-            if self.state == AgentState.PAUSED:
-                await asyncio.sleep(0.5)
+        # Map information from ExplorerBot
+        self.coordenadasInicioTerrenoPlano: Optional[Dict[str, int]] = None
+        self.coordenadasFinalTerrenoPlano: Optional[Dict[str, int]] = None
+        self.alturaPlanicie: Optional[int] = None
+    # ======================================================================
+    #                              PERCEIVE
+    # ======================================================================
+
+    async def perceive(self) -> Dict[str, Any]:
+        """
+        Perception phase.
+
+        - Reads messages from the input queue (requirements, control).
+        - Builds and returns a perception dictionary to be used by decide().
+
+        """
+        # 1) Process all available messages in the multiprocessing queue
+        await self._perceive_queue_messages()
+
+        # 2) Build the perception object
+        perception = self._build_perception()
+        return perception
+
+    async def _perceive_queue_messages(self) -> None:
+        while True:
+            msg = await self.leerMensaje()
+
+            # No more messages in the queue
+            if msg is None or msg == "":
+                break
+
+            msg_type = msg.get("type")
+
+            # Control message
+            # Shape: { 'type': 'control', 'target': 'BuilderBot', 'payload': { 'cmd': '...' } }
+            if msg_type == "control":
+                payload = msg.get("payload", {})
+                if isinstance(payload, dict):
+                    cmd = payload.get("cmd")
+
+                    # pause, resume or stop
+                    if cmd in ("pause", "resume", "stop"):
+                        self.gestionarControles(payload)
+                        self.last_control = cmd
+                        continue
+
+                    # status: send a summary in the Minecraft chat
+                    # TODO: POSTEAR LOS BLOQUES QUE LE FALTAN POR PONER, EL PLAN SELECCIONADO Y
+                    #  EL PORCENTAJE DE LO QUE YA ESTA CONSTRUIDO DE LA ESTRUCTURA
+                    if cmd == "status":
+                        if self.mc:
+                            self.mc.postToChat()
+                        continue
+
+                    if cmd == "update":
+                        args = payload.get("args", {})
+
+                        if "list" in args:
+                            # plan list
+                            await self._list_templates()
+                            continue
+
+                        if "bom" in args:
+                            #bom
+                            await self._publish_bom()
+                            continue
+
+                        if "build" in args:
+                            self.pending_build = True
+
+                            # Verificar si ya tenemos materiales disponibles
+                            if self.available_materials is not None and self.check_materials_available():
+                                self.can_build = True
+                                if self.mc:
+                                    self.mc.postToChat("Materiales disponibles. Iniciando construcción...")
+                            else:
+                                if self.mc:
+                                    self.mc.postToChat("Construcción solicitada. Esperando materiales...")
+                            continue
+
+                        if "plan set" in args:
+                            template_name = args[1]
+                            await self.set_template(template_name)
+                            continue
+
+            if msg_type == "materials.inventory.v1":  # Cambio aquí
+                payload = msg.get("payload", {})
+                self.available_materials = payload
+
+                if self.pending_build and self.check_materials_available():
+                    self.can_build = True
+                    if self.mc:
+                        self.mc.postToChat("Materiales recibidos. Iniciando construcción...")
                 continue
-            
-            # Colocar bloque real si tenemos conexión
-            if self.mc is not None:
-                try:
-                    # Construir una línea de bloques como demo
-                    import sys
-                    import os
-                    base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-                    mcpi_path = os.path.join(base, "AdventuresInMinecraft-PC", "MyAdventures")
-                    if mcpi_path not in sys.path:
-                        sys.path.insert(0, mcpi_path)
-                    import mcpi.block as block
-                    self.mc.setBlock(base_x + i, base_y, base_z, block.STONE.id)
-                    self.estadoActual(f"Placed block at ({base_x + i}, {base_y}, {base_z})")
-                except Exception as e:
-                    self.estadoActual(f"Error placing block: {e}")
-            
-            progress = (i + 1) / total_steps
-            details = {"step": i + 1, "total": total_steps, "pos": (base_x + i, base_y, base_z)}
-            msg = BuildV1(progress=progress, details=details).to_message(origin=self.name)
-            # broadcast build progress to all known agents
-            for target in self.out_queues.keys():
-                self.enviarMensaje(target, msg)
-            self.estadoActual(f"Published build.v1 progress={progress:.2f}")
-            await asyncio.sleep(1)
-        
-        if self.mc is not None:
-            self.mc.postToChat("BuilderBot: Construcción completada!")
-        self.estadoActual("Build completed")
 
+            if msg_type == "map.v1":
+                payload = msg.get("payload", {})
+                self.coordenadasInicioTerrenoPlano = payload.get("coordenadasInicioTerrenoPlano")
+                self.coordenadasFinalTerrenoPlano = payload.get("coordenadasFinalTerrenoPlano")
+                self.alturaPlanicie = payload.get("alturaPlanicie")
 
-def agent_process_main(in_queue: Queue, q_explorer: Queue, q_miner: Queue, q_builder: Queue, **kwargs):
-    """Entry point para ejecutar en un proceso separado.
+                if self.mc:
+                    self.mc.postToChat(f"Mapa recibido. Planicie en y={self.alturaPlanicie}")
+                continue
 
-    Args:
-        in_queue: Cola de entrada del agente
-        q_explorer: Cola del ExplorerBot
-        q_miner: Cola del MinerBot
-        q_builder: Cola del BuilderBot
-        **kwargs: Parámetros adicionales (mc_host, mc_port)
-    """
-    # Intentar conectar a Minecraft si se proporcionan credenciales
-    mc = None
-    mc_host = kwargs.get("mc_host")
-    mc_port = kwargs.get("mc_port")
-    
-    if mc_host and mc_port:
+    def _build_perception(self) -> Dict[str, Any]:
+        """
+        Build the perception dictionary passed to decide().
+        """
+        return {
+            "has_template": self.current_template is not None,
+            "bom_published": self.bom_published,
+            "has_materials": self.can_build,
+            "pending_build": self.pending_build,
+            "has_map": self.coordenadasInicioTerrenoPlano is not None,
+            "control_state": self.last_control,
+        }
+
+    async def _list_templates(self) -> None:
+        """Posts the available templates in /templates folder"""
+
+        templates_dir = "minecraft_framework/templates"
+
+        if not os.path.exists(templates_dir):
+            if self.mc:
+                self.mc.postToChat("No hay templates disponibles")
+            return
+
+        template_files = [f for f in os.listdir(templates_dir) if os.path.isfile(os.path.join(templates_dir, f))]
+
+        if not template_files:
+            if self.mc:
+                self.mc.postToChat("No hay templates disponibles")
+            return
+
+        # Postear lista en el chat
+        if self.mc:
+            self.mc.postToChat("Templates disponibles:")
+            for template in template_files:
+                self.mc.postToChat(f"- {template}")
+
+    async def set_template(self, template_name: str) -> None:
+        template_path = os.path.join("minecraft_framework/templates", template_name)
+
+        if not os.path.exists(template_path):
+            if self.mc:
+                self.mc.postToChat(f"Template '{template_name}' no encontrado")
+            return
+
         try:
-            import sys
-            import os
-            base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-            mcpi_path = os.path.join(base, "AdventuresInMinecraft-PC", "MyAdventures")
-            if os.path.exists(mcpi_path):
-                sys.path.insert(0, mcpi_path)
-            from mcpi.minecraft import Minecraft
-            mc = Minecraft.create(mc_host, mc_port)
-            print(f"[BuilderBot] Connected to Minecraft at {mc_host}:{mc_port}")
+            # Parsear el CSV
+            blocks = []
+            with open(template_path, 'r') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    blocks.append({
+                        'layer': int(row['layer']),
+                        'x': int(row['x']),
+                        'z': int(row['z']),
+                        'block_type': row['block_type']
+                    })
+
+            self.current_template = {
+                'name': template_name,
+                'blocks': blocks
+            }
+
+            # Calcular BOM
+            self._calculate_bom()
+
+            if self.mc:
+                self.mc.postToChat(f"Template '{template_name}' cargado. Total bloques: {len(blocks)}")
+
         except Exception as e:
-            print(f"[BuilderBot] Could not connect to Minecraft: {e}. Using simulation.")
-    
-    bot = BuilderBot("BuilderBot", in_queue, q_explorer, q_miner, q_builder, mc=mc)
-    try:
-        import asyncio
-        asyncio.run(bot.iniciarAgente())
-    except KeyboardInterrupt:
-        bot.estadoActual("KeyboardInterrupt in process")
+            if self.mc:
+                self.mc.postToChat(f"Error al cargar template: {str(e)}")
+
+    def _calculate_bom(self) -> None:
+        """Calcula el Bill of Materials del template actual."""
+        if self.current_template is None:
+            return
+
+        bom = defaultdict(int)
+        for block in self.current_template['blocks']:
+            bom[block['block_type']] += 1
+
+        self.bom = dict(bom)
+
+    async def _publish_bom(self) -> None:
+        """Publica el BOM en la cola de salida."""
+        if self.bom is None:
+            if self.mc:
+                self.mc.postToChat("No hay template seleccionado")
+            return
+
+        bom_msg = {
+            "type": "materials.requirements.v1",
+            "origin": self.name,
+            "timestamp": 0,
+            "payload": self.bom
+        }
+
+        self.enviarMensaje("MinerBot", bom_msg)
+        self.bom_published = True
+
+        if self.mc:
+            self.mc.postToChat("Bill Of Materials:")
+            for block_type, count in self.bom.items():
+                self.mc.postToChat(f"  {block_type}: {count}")
+
+    def check_materials_available(self) -> bool:
+        """Verifica si hay suficientes materiales disponibles."""
+        if self.bom is None or self.available_materials is None:
+            return False
+
+        for block_type, required in self.bom.items():
+            available = self.available_materials.get(block_type, 0)
+            if available < required:
+                if self.mc:
+                    self.mc.postToChat(f"Faltan materiales: {block_type} ({available}/{required})")
+                return False
+
+        return True
+
+    def _get_block_id(self, material_name: str) -> int:
+        """Convierte un nombre de material a block_id.
+
+        Args:
+            material_name: Nombre del material (ej: "stone", "planks", "gold_block")
+
+        Returns:
+            Block ID correspondiente, o STONE.id si no se encuentra
+        """
+        block_id = material_to_block(material_name)
+
+        if block_id is not None:
+            return block_id
+
+        # Si no se encuentra, loguear error y usar piedra por defecto
+        if self.mc:
+            self.mc.postToChat(f"ADVERTENCIA: Bloque '{material_name}' no encontrado, usando piedra")
+
+        return block.STONE.id
+
+    # ======================================================================
+    #  DECIDE
+    # ======================================================================
+    async def decide(self, perception: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        From the perception, select ONE high level action:
+          - NO_OP
+          - SEND_BOM
+          - WAITING_FOR_MATERIALS
+          - BUILD_COMPLETED
+          - BUILD
+        """
+        if self.last_control == "pause":
+            return {"action": "NO_OP"}
+
+        if self.can_build and self.current_template is not None:
+            return {"action": "BUILD"}
+
+        # Si hay template seleccionado pero no hemos publicado BOM
+        if self.current_template is not None and not self.bom_published:
+            return {"action": "SEND_BOM"}
+
+        # Si esperamos materiales
+        if self.pending_build and not self.can_build:
+            return {"action": "WAITING_FOR_MATERIALS"}
+
+        # Esperar más mensajes
+        return {"action": "NO_OP"}
+
+    # ======================================================================
+    #  ACT
+    # ======================================================================
+
+    async def act(self, decision: Dict[str, Any]):
+        """
+        Execute the decided action.
+        """
+        action = decision.get("action", "NO_OP")
+
+        if action == "SEND_BOM":
+            await self._publish_bom()
+
+        elif action == "BUILD":
+            await self._build_structure()
+
+        elif action == "WAITING_FOR_MATERIALS":
+            # Just wait, do nothing
+            pass
+
+        elif action == "NO_OP":
+            # Do nothing
+            pass
+
+    async def _build_structure(self) -> None:
+        """Construye la estructura capa por capa."""
+        if self.current_template is None or self.mc is None:
+            return
+
+        if self.coordenadasInicioTerrenoPlano is None or self.alturaPlanicie is None:
+            if self.mc:
+                self.mc.postToChat("No hay información del terreno. Esperando mapa...")
+            return
+
+        start_x = self.coordenadasInicioTerrenoPlano['x']
+        start_z = self.coordenadasInicioTerrenoPlano['z']
+        start_y = self.alturaPlanicie
+
+        # Ordenar bloques por capa
+        blocks = sorted(self.current_template['blocks'], key=lambda b: b['layer'])
+
+        current_layer = -1
+        for block in blocks:
+            # Anunciar nueva capa
+            if block['layer'] != current_layer:
+                current_layer = block['layer']
+                if self.mc:
+                    self.mc.postToChat(f"Construyendo capa {current_layer}...")
+                await asyncio.sleep(0.3)  # Pausa al cambiar de capa
+
+            # Colocar bloque
+            abs_x = start_x + block['x']
+            abs_y = start_y + block['layer']
+            abs_z = start_z + block['z']
+
+            # Obtener el block_id del material y colocar el bloque
+            block_type_name = block['block_type']
+            block_id = self._get_block_id(block_type_name)
+            self.mc.setBlock(abs_x, abs_y, abs_z, block_id)
+
+            # Delay para ver el proceso de construcción
+            await asyncio.sleep(0.1)
+
+        # Construcción completada
+        self.can_build = False
+        self.pending_build = False
+        self.bom_published = False
+        self.current_template = None
+
+        if self.mc:
+            self.mc.postToChat("Construcción completada!")
