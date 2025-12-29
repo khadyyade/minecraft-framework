@@ -52,8 +52,8 @@ def parse_command(text: str) -> Dict[str, Any]:
         return {"type": "control", "target": "ALL", "payload": {"cmd": cmd}}
 
     # ejemplo: /explorer start x=0 z=0
-    if parts[0] == "/explorer":
-        sub = parts[1]
+    if parts[0] == "\explorer":
+        sub = parts[1] if len(parts) > 1 else ""
         if sub == "start":
             args = {}
             for p in parts[2:]:
@@ -63,6 +63,10 @@ def parse_command(text: str) -> Dict[str, Any]:
             return {"type": "control", "target": "ExplorerBot", "payload": {"cmd": "update", "args": args}}
         if sub == "stop":
             return {"type": "control", "target": "ExplorerBot", "payload": {"cmd": "stop"}}
+        if sub == "pause":
+            return {"type": "control", "target": "ExplorerBot", "payload": {"cmd": "pause"}}
+        if sub == "resume":
+            return {"type": "control", "target": "ExplorerBot", "payload": {"cmd": "resume"}}
 
     # TODO: parsear resto de comandos de miner/builder/workflow
 

@@ -1,4 +1,6 @@
 # Importamos las librerías necesarias
+# Se ha decidido gestionar cada Agente como un proceso
+# Internamente los procesos trabajan con funciones de la librería asyncio
 from multiprocessing import Process, Queue
 import time
 import json
@@ -22,7 +24,7 @@ def obtenerClaseAgente(agent_name: str):
 #   [11:38:58 INFO]: [RaspberryJuice] Enabling RaspberryJuice v1.10
 #   [11:38:58 INFO]: [RaspberryJuice] Using port 4711
 
-def iniciarAgentes(mc_host="localhost", mc_port=4711):
+def iniciarAgentes(mc_host="localhost", mc_port=4711, x=0, z=0, scan_range=8, tam_planicie=4):
     
     # Cargar las clases de los agentes usando reflection
     ExplorerBot = obtenerClaseAgente("explorer")
@@ -43,7 +45,7 @@ def iniciarAgentes(mc_host="localhost", mc_port=4711):
 
     # Parámetros que necesita cada agente para funcionar
     # Hay que intentar pasar los params por terminal tambien
-    explorer_kwargs = {**minecraft_connection_params, "x": 0, "z": 0, "range": 8}
+    explorer_kwargs = {**minecraft_connection_params, "x": x, "z": z, "range": scan_range, "size": tam_planicie}
     miner_kwargs = {**minecraft_connection_params, "strategy": "vertical"}
     builder_kwargs = {**minecraft_connection_params}
 
@@ -96,19 +98,38 @@ def iniciarAgentes(mc_host="localhost", mc_port=4711):
 if __name__ == "__main__":
     import sys
     
-    # Por defecto siempre conecta a localhost:4711
-    mc_host = "localhost"
-    mc_port = 4711
+    # Valores por defecto
+    param_mc_host = "localhost"
+    param_mc_port = 4711
+    param_x = 0
+    param_z = 0
+    param_scan_range = 8
+    param_tam_planicie = 4
     
-    # Se permite cambiar host y/o puerto desde terminal
-    # python main.py --host=192.168.1.100 --port=4711
+    # Leer parámetros desde terminal
+    # Uso: python main.py --host=localhost --port=4711 --x=0 --z=0 --range=8 --size=4
     for arg in sys.argv[1:]:
         if arg.startswith("--host="):
-            mc_host = arg.split("=", 1)[1]
+            param_mc_host = arg.split("=", 1)[1]
         elif arg.startswith("--port="):
-            mc_port = int(arg.split("=", 1)[1])
+            param_mc_port = int(arg.split("=", 1)[1])
+        elif arg.startswith("--x="):
+            param_x = int(arg.split("=", 1)[1])
+        elif arg.startswith("--z="):
+            param_z = int(arg.split("=", 1)[1])
+        elif arg.startswith("--range="):
+            param_scan_range = int(arg.split("=", 1)[1])
+        elif arg.startswith("--size="):
+            param_tam_planicie = int(arg.split("=", 1)[1])
     
     print(f"Iniciando agentes...")
-    print(f"Conectando al servidor de Minecraft en: {mc_host}:{mc_port}")
+    print(f"Conectando al servidor de Minecraft en: {param_mc_host}:{param_mc_port}")
     # Lanzamos la función principal que inicia los agentes
-    iniciarAgentes(mc_host=mc_host, mc_port=mc_port)
+    iniciarAgentes(
+        mc_host=param_mc_host,
+        mc_port=param_mc_port,
+        x=param_x,
+        z=param_z,
+        scan_range=param_scan_range,
+        tam_planicie=param_tam_planicie
+    )
