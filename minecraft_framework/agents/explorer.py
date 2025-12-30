@@ -67,8 +67,9 @@ class ExplorerBot(BaseAgent):
         self.exploracion = self.CargarClaseExploracion()
 
     def CargarClaseExploracion(self):
+        """Carga la clase de exploración usando reflection (patrón Strategy)."""
         try:
-            modulo_exploracion = importlib.import_module("minecraft_framework.agents.exploracion")
+            modulo_exploracion = importlib.import_module("minecraft_framework.exploration.exploracion")
             ClaseExploracion = getattr(modulo_exploracion, "Exploracion")
             return ClaseExploracion(self.mc, self.alturaMapa)
         except Exception as e:
@@ -102,35 +103,69 @@ class ExplorerBot(BaseAgent):
         }
         
         # Leer mensajes de la cola (comandos de control, updates, etc)
-        msg = await self.leerMensaje() # Usamos el método del metodo padre baseAgent para leer el los mensajes que tengamos en nuestra cola
-        # Si hay mensaje...
-        if msg:
-            msgPerception["mensajes"].append(msg) # Añadimos los mensajes recibidos al mensaje interno (no se usarán, solo los almacenamos)
-            
-            # Miramos de que tipo mensaje es
-            # Los mensajes de control como pause, resume o stop no nos importan aquí (los gestiona baseAgent)
-            # Nos fijamos si nos llega un update
-            # El explorer no recibe ningún mensaje concreto del Communication Flow (el BuilderBot notifica a todos el estado global, pero eso es independiente a nosotros)
+        while True:
+            msg = await self.leerMensaje() # Usamos el método del metodo padre baseAgent para leer el los mensajes que tengamos en nuestra cola
 
+            # No more messages in the queue
+            if msg is None or msg == "":
+                break
+
+            msgPerception["mensajes"].append(msg) # Añadimos los mensajes recibidos al mensaje interno
+
+            # Miramos de que tipo mensaje es
             msg_type = msg.get("type")
             
+            # Control message
+            # Shape: { 'type': 'control', 'target': 'ExplorerBot', 'payload': { 'cmd': '...' } }
             if msg_type == "control":
-                control = msg.get("payload", {})
-                cmd = control.get("command")
-                
-                # Si es un update, resetear estado
-                if cmd == "update":
-                    self.logs("Hemos recibido un update, reseteamos todo")  # Entiendo que se refiere a esto cuando la teoría dice: "Agents must confirm updates via acknowledgment mensajes"
-                    # Reseteamos todo
-                    self.escaneoInicial = False
-                    self.alturasActuales = None
-                    self.zonasPlanas = []
-                    msgPerception["hemosHechoEscaneoInicial"] = False
-                    msgPerception["datosEscaneo"] = None
-                    #############
-                    # IMPORTANTE: El update puede ser que lleve nuevas coordenadas, tamaño de la planicie y rango
-                    #############
-        
+                payload = msg.get("payload", {})
+                if isinstance(payload, dict):
+                    cmd = payload.get("cmd")
+
+                    # pause, resume or stop
+                    if cmd in ("pause", "resume", "stop"):
+                        self.gestionarControles(payload)
+                        continue
+
+                    # status: send a summary in the Minecraft chat
+                    if cmd == "status":
+                        status_msg = f"[Explorer] state={self.estadoActual.name}, pos=({self.x},{self.z}), range={self.rangoScan}"
+                        self.logs(f"STATUS: {status_msg}")
+                        if self.mc:
+                            self.mc.postToChat(status_msg)
+                        continue
+
+                    # update command: handle start, set range
+                    if cmd == "update":
+                        args = payload.get("args", {})
+
+                        # /explorer start x=<int> z=<int> [range=<int>]
+                        if "start" in args:
+                            coords = args["start"]
+                            self.x = coords.get("x", self.x)
+                            self.z = coords.get("z", self.z)
+                            if "range" in coords:
+                                self.rangoScan = coords["range"]
+
+                            # Resetear estado
+                            self.escaneoInicial = False
+                            self.alturasActuales = None
+                            self.zonasPlanas = []
+                            msgPerception["hemosHechoEscaneoInicial"] = False
+                            msgPerception["datosEscaneo"] = None
+
+                            self.logs(f"Start exploration from command: x={self.x}, z={self.z}, range={self.rangoScan}")
+
+                            # Cambiar a RUNNING
+                            self.gestionarControles(payload)
+
+                        # /explorer set range <int>
+                        if "range" in args:
+                            self.rangoScan = args["range"]
+                            self.logs(f"Range updated to {self.rangoScan}")
+
+                        continue
+
         return msgPerception    # Enviamos el mensaje interno
 
     async def decide(self, msgPerception: Dict[str, Any]) -> Dict[str, Any]:
@@ -225,6 +260,14 @@ class ExplorerBot(BaseAgent):
                     
                     if extensiones:
                         self.logs(f"Hemos encontrado {len(extensiones)} posibles extensiones")
+
+                        # Calcular altura promedio del terreno (ignorando agua = -1)
+                        alturas_validas = [h for row in alturas for h in row if h != -1]
+                        if alturas_validas:
+                            altura_promedio = int(sum(alturas_validas) / len(alturas_validas))
+                        else:
+                            altura_promedio = 64  # Altura por defecto si todo es agua
+
                         msgDecision["action"] = "extend"
                         msgDecision["params"] = {
                             "extensiones": extensiones,
@@ -239,12 +282,20 @@ class ExplorerBot(BaseAgent):
                             "esTodoAgua": False,
                             "hayArboles": self.hayArboles,
                             "hayArena": self.hayArena,
-                            "coordenadasInicioTerrenoPlano": {"x": -1, "z": -1},
-                            "coordenadasFinalTerrenoPlano": {"x": -1, "z": -1},
-                            "alturaPlanicie": -1
+                            "coordenadasInicioTerrenoPlano": {"x": self.x - tam_scan//2, "z": self.z - tam_scan//2},
+                            "coordenadasFinalTerrenoPlano": {"x": self.x + tam_scan//2, "z": self.z + tam_scan//2},
+                            "alturaPlanicie": altura_promedio
                         }
                     else:
                         self.logs(f"No se puede extender")
+
+                        # Calcular altura promedio del terreno (ignorando agua = -1)
+                        alturas_validas = [h for row in alturas for h in row if h != -1]
+                        if alturas_validas:
+                            altura_promedio = int(sum(alturas_validas) / len(alturas_validas))
+                        else:
+                            altura_promedio = 64  # Altura por defecto
+
                         msgDecision["action"] = "relocate"
                         msgDecision["reason"] = "NoSePuedeExtender"
                         hayQueEnviarMapV1 = True
@@ -255,9 +306,9 @@ class ExplorerBot(BaseAgent):
                             "esTodoAgua": False,
                             "hayArboles": self.hayArboles,
                             "hayArena": self.hayArena,
-                            "coordenadasInicioTerrenoPlano": {"x": 0, "z": 0},
-                            "coordenadasFinalTerrenoPlano": {"x": 0, "z": 0},
-                            "alturaPlanicie": -1
+                            "coordenadasInicioTerrenoPlano": {"x": self.x, "z": self.z},
+                            "coordenadasFinalTerrenoPlano": {"x": self.x, "z": self.z},
+                            "alturaPlanicie": altura_promedio
                         }
         
         # Esto solo lo hacemos por defecto, aunque no deberíamos entrar
@@ -277,6 +328,13 @@ class ExplorerBot(BaseAgent):
                 self.enviarMensaje("BuilderBot", mensaje)
                 self.logs(f"Mensaje map.v1 enviado a BuilderBot: {msgDecision['reason']}")
                 self.logs(f"{mensaje}")
+
+                if self.mc:
+                    self.mc.postToChat("[Explorer] Planicie encontrada y enviada al Builder")
+
+                # Cambiar a IDLE - tarea completada
+                self.cambiarEstadoAgente(EstadoAgente.IDLE, razon="Planicie encontrada y comunicada al Builder")
+
             except Exception as e:
                 self.logs(f"Error al enviar mensaje map.v1 {e}")
         

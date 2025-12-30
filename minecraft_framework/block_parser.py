@@ -24,36 +24,41 @@ import mcpi.block as block
 def get_default_block_mapping() -> Dict[int, str]:
     """Devuelve el mapping por defecto block_id -> material.
 
-    Basado en las constantes disponibles en tu `mcpi.block` (108 constantes, ver
-    `list_mcpi_blocks.py`).
+    Basado en las definiciones reales de mcpi.block disponibles en Minecraft Pi Edition.
+    Solo incluye bloques que realmente existen en la librería.
     """
 
     return {
-        # Terreno base
+        # Aire y terreno base
+        block.AIR.id: "air",
         block.STONE.id: "stone",
-        block.COBBLESTONE.id: "cobblestone",
-        block.DIRT.id: "dirt",
         block.GRASS.id: "grass",
+        block.DIRT.id: "dirt",
+        block.COBBLESTONE.id: "cobblestone",
+        block.BEDROCK.id: "bedrock",
         block.SAND.id: "sand",
         block.GRAVEL.id: "gravel",
         block.MOSS_STONE.id: "moss_stone",
+        block.CLAY.id: "clay",
+        block.FARMLAND.id: "farmland",
 
-        # Madera / árbol
-        block.WOOD.id: "wood",
-        block.WOOD_PLANKS.id: "planks",
-        block.LEAVES.id: "leaves",
-        block.LEAVES2.id: "leaves",
+        # Madera y vegetación
+        block.WOOD_PLANKS.id: "wood_planks",
         block.SAPLING.id: "sapling",
+        block.WOOD.id: "wood",
+        block.LEAVES.id: "leaves",
+        block.GRASS_TALL.id: "grass_tall",
+        block.COBWEB.id: "cobweb",
 
-        # Minerales (mena + bloques)
+        # Minerales (mena)
         block.COAL_ORE.id: "coal_ore",
         block.IRON_ORE.id: "iron_ore",
         block.GOLD_ORE.id: "gold_ore",
         block.DIAMOND_ORE.id: "diamond_ore",
         block.REDSTONE_ORE.id: "redstone_ore",
         block.LAPIS_LAZULI_ORE.id: "lapis_ore",
-        block.EMERALD_ORE.id: "emerald_ore",
 
+        # Bloques de minerales
         block.IRON_BLOCK.id: "iron_block",
         block.GOLD_BLOCK.id: "gold_block",
         block.DIAMOND_BLOCK.id: "diamond_block",
@@ -65,8 +70,6 @@ def get_default_block_mapping() -> Dict[int, str]:
         block.SANDSTONE.id: "sandstone",
         block.STONE_SLAB.id: "stone_slab",
         block.STONE_SLAB_DOUBLE.id: "stone_slab_double",
-        block.WOODEN_SLAB.id: "wood_slab",
-        block.CLAY.id: "clay",
         block.GLASS.id: "glass",
         block.GLASS_PANE.id: "glass_pane",
         block.WOOL.id: "wool",
@@ -77,68 +80,50 @@ def get_default_block_mapping() -> Dict[int, str]:
         block.CHEST.id: "chest",
         block.CRAFTING_TABLE.id: "crafting_table",
         block.FURNACE_INACTIVE.id: "furnace",
-        block.FURNACE_ACTIVE.id: "furnace",
+        block.FURNACE_ACTIVE.id: "furnace_active",
         block.LADDER.id: "ladder",
+        block.TORCH.id: "torch",
+        block.FIRE.id: "fire",
+        block.BED.id: "bed",
 
-        # Vallas/puertas
+        # Vallas y puertas
         block.FENCE.id: "fence",
-        block.FENCE_ACACIA.id: "fence_acacia",
-        block.FENCE_BIRCH.id: "fence_birch",
-        block.FENCE_SPRUCE.id: "fence_spruce",
-        block.FENCE_JUNGLE.id: "fence_jungle",
-        block.FENCE_DARK_OAK.id: "fence_dark_oak",
         block.FENCE_GATE.id: "fence_gate",
-        block.TRAPDOOR.id: "trapdoor",
-        block.TRAPDOOR_IRON.id: "iron_trapdoor",
         block.DOOR_WOOD.id: "wood_door",
         block.DOOR_IRON.id: "iron_door",
-        block.DOOR_ACACIA.id: "acacia_door",
-        block.DOOR_BIRCH.id: "birch_door",
-        block.DOOR_SPRUCE.id: "spruce_door",
-        block.DOOR_JUNGLE.id: "jungle_door",
-        block.DOOR_DARK_OAK.id: "dark_oak_door",
 
         # Escaleras
         block.STAIRS_WOOD.id: "stairs_wood",
         block.STAIRS_COBBLESTONE.id: "stairs_cobblestone",
-        block.STAIRS_BRICK.id: "stairs_brick",
-        block.STAIRS_STONE_BRICK.id: "stairs_stone_brick",
-        block.STAIRS_SANDSTONE.id: "stairs_sandstone",
 
-        # Nether / End
-        block.NETHERRACK.id: "netherrack",
-        block.SOUL_SAND.id: "soul_sand",
-        block.NETHER_BRICK.id: "nether_brick",
-        block.FENCE_NETHER_BRICK.id: "nether_brick_fence",
-        block.STAIRS_NETHER_BRICK.id: "stairs_nether_brick",
+        # Bloques especiales
         block.GLOWSTONE_BLOCK.id: "glowstone",
         block.OBSIDIAN.id: "obsidian",
         block.GLOWING_OBSIDIAN.id: "glowing_obsidian",
-        block.END_STONE.id: "end_stone",
+        block.NETHER_REACTOR_CORE.id: "nether_reactor_core",
+        block.BEDROCK_INVISIBLE.id: "bedrock_invisible",
 
-        # Agua/lava/hielo/nieve
+        # Agua y lava
         block.WATER.id: "water",
-        block.WATER_FLOWING.id: "water",
-        block.WATER_STATIONARY.id: "water",
+        block.WATER_FLOWING.id: "water_flowing",
+        block.WATER_STATIONARY.id: "water_stationary",
         block.LAVA.id: "lava",
-        block.LAVA_FLOWING.id: "lava",
-        block.LAVA_STATIONARY.id: "lava",
+        block.LAVA_FLOWING.id: "lava_flowing",
+        block.LAVA_STATIONARY.id: "lava_stationary",
+
+        # Hielo y nieve
         block.ICE.id: "ice",
         block.SNOW.id: "snow",
         block.SNOW_BLOCK.id: "snow_block",
 
-        # Vegetación
+        # Vegetación y flores
         block.CACTUS.id: "cactus",
         block.SUGAR_CANE.id: "sugar_cane",
         block.MELON.id: "melon",
-        block.PUMPKIN.id: "pumpkin",
-        block.LIT_PUMPKIN.id: "lit_pumpkin",
+        block.FLOWER_YELLOW.id: "flower_yellow",
+        block.FLOWER_CYAN.id: "flower_cyan",
         block.MUSHROOM_BROWN.id: "mushroom_brown",
         block.MUSHROOM_RED.id: "mushroom_red",
-        block.MYCELIUM.id: "mycelium",
-
-        # Otros
-        block.BEDROCK.id: "bedrock",
     }
 
 

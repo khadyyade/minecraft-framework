@@ -4,8 +4,19 @@ from multiprocessing import Process, Queue
 def _builder_process(in_q: Queue, q_explorer: Queue, q_miner: Queue, q_builder: Queue):
     """Entry point del proceso del Builder."""
     from minecraft_framework.agents.builder import BuilerBot
+    from mcpi.minecraft import Minecraft
+
+    # Conectar a Minecraft dentro del proceso
+    try:
+        mc = Minecraft.create()
+        print(f"[BuilderBot] Conectado a Minecraft")
+    except Exception as e:
+        print(f"[BuilderBot] Error al conectar: {e}")
+        mc = None
 
     bot = BuilerBot("BuilderBot", in_q, q_explorer, q_miner, q_builder)
+    if mc:
+        bot.mc = mc
     asyncio.run(bot.iniciarAgente())
 
 async def main():

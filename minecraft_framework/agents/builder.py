@@ -1,4 +1,4 @@
-from minecraft_framework.baseAgent import BaseAgent
+from minecraft_framework.baseAgent import BaseAgent, EstadoAgente
 from minecraft_framework.block_parser import material_to_block
 from mcpi.minecraft import Minecraft
 import mcpi.block as block
@@ -20,8 +20,8 @@ class BuilerBot(BaseAgent):
     ):
         super().__init__(name, in_queue, q_explorer, q_miner, q_builder)
 
-        # Connection to Minecraft
-        self.mc = Minecraft.create()
+        # Connection to Minecraft (se inicializa después)
+        self.mc = None
 
         # Control state
         self.last_control: Optional[str] = None
@@ -83,11 +83,15 @@ class BuilerBot(BaseAgent):
                         continue
 
                     # status: send a summary in the Minecraft chat
-                    # TODO: POSTEAR LOS BLOQUES QUE LE FALTAN POR PONER, EL PLAN SELECCIONADO Y
-                    #  EL PORCENTAJE DE LO QUE YA ESTA CONSTRUIDO DE LA ESTRUCTURA
                     if cmd == "status":
+                        status_msg = f"[Builder] state={self.estadoActual.name}, template={self.current_template['name'] if self.current_template else 'None'}, can_build={self.can_build}"
+                        self.logs(f"STATUS: {status_msg}")
                         if self.mc:
-                            self.mc.postToChat()
+                            self.mc.postToChat(status_msg)
+                            if self.bom:
+                                self.mc.postToChat(f"BOM: {self.bom}")
+                            if self.coordenadasInicioTerrenoPlano:
+                                self.mc.postToChat(f"Build coords: {self.coordenadasInicioTerrenoPlano}, y={self.alturaPlanicie}")
                         continue
 
                     if cmd == "update":
@@ -105,19 +109,22 @@ class BuilerBot(BaseAgent):
 
                         if "build" in args:
                             self.pending_build = True
+                            self.logs(f"BUILD command received. Has materials: {self.available_materials is not None}, Has map: {self.coordenadasInicioTerrenoPlano is not None}")
 
                             # Verificar si ya tenemos materiales disponibles
                             if self.available_materials is not None and self.check_materials_available():
                                 self.can_build = True
                                 if self.mc:
                                     self.mc.postToChat("Materiales disponibles. Iniciando construcción...")
+                                # Cambiar a RUNNING
+                                self.gestionarControles(payload)
                             else:
                                 if self.mc:
                                     self.mc.postToChat("Construcción solicitada. Esperando materiales...")
                             continue
 
-                        if "plan set" in args:
-                            template_name = args[1]
+                        if "plan_set" in args:
+                            template_name = args["plan_set"]
                             await self.set_template(template_name)
                             continue
 
@@ -125,20 +132,48 @@ class BuilerBot(BaseAgent):
                 payload = msg.get("payload", {})
                 self.available_materials = payload
 
+                self.logs(f"Inventory recibido del Miner: {payload}")
+
                 if self.pending_build and self.check_materials_available():
                     self.can_build = True
                     if self.mc:
                         self.mc.postToChat("Materiales recibidos. Iniciando construcción...")
+                    # Cambiar a RUNNING para empezar a construir
+                    self.gestionarControles({'cmd': 'update', 'args': {}})
+                else:
+                    if self.pending_build:
+                        self.logs(f"Materiales insuficientes. Necesito: {self.bom}, Tengo: {payload}")
                 continue
 
             if msg_type == "map.v1":
-                payload = msg.get("payload", {})
-                self.coordenadasInicioTerrenoPlano = payload.get("coordenadasInicioTerrenoPlano")
-                self.coordenadasFinalTerrenoPlano = payload.get("coordenadasFinalTerrenoPlano")
-                self.alturaPlanicie = payload.get("alturaPlanicie")
+                # El Explorer envía los datos en 'data', no en 'payload'
+                data = msg.get("data", {})
+                if not data:
+                    # Fallback por si acaso usa 'payload'
+                    data = msg.get("payload", {})
+
+                altura = data.get("alturaPlanicie")
+
+                # Validar que la altura sea válida
+                if altura is None or altura < 0:
+                    self.logs(f"MAP received but invalid height: {altura}. Ignoring.")
+                    if self.mc:
+                        self.mc.postToChat("[Builder] Mapa inválido recibido (altura < 0). Explorer debe buscar mejor terreno.")
+                    continue
+
+                self.coordenadasInicioTerrenoPlano = data.get("coordenadasInicioTerrenoPlano")
+                self.coordenadasFinalTerrenoPlano = data.get("coordenadasFinalTerrenoPlano")
+                self.alturaPlanicie = altura
+
+                self.logs(f"MAP received: start={self.coordenadasInicioTerrenoPlano}, height={self.alturaPlanicie}")
 
                 if self.mc:
-                    self.mc.postToChat(f"Mapa recibido. Planicie en y={self.alturaPlanicie}")
+                    self.mc.postToChat(f"[Builder] Mapa recibido del Explorer. Planicie en y={self.alturaPlanicie}")
+
+                # Si estábamos esperando el mapa, cambiar a IDLE
+                if self.estadoActual == EstadoAgente.WAITING:
+                    self.cambiarEstadoAgente(EstadoAgente.IDLE, razon="Mapa recibido del Explorer")
+
                 continue
 
     def _build_perception(self) -> Dict[str, Any]:
@@ -181,6 +216,7 @@ class BuilerBot(BaseAgent):
         template_path = os.path.join("minecraft_framework/templates", template_name)
 
         if not os.path.exists(template_path):
+            self.logs(f"Template '{template_name}' not found at {template_path}")
             if self.mc:
                 self.mc.postToChat(f"Template '{template_name}' no encontrado")
             return
@@ -206,10 +242,13 @@ class BuilerBot(BaseAgent):
             # Calcular BOM
             self._calculate_bom()
 
+            self.logs(f"Template '{template_name}' loaded. Total blocks: {len(blocks)}, BOM: {self.bom}")
+
             if self.mc:
                 self.mc.postToChat(f"Template '{template_name}' cargado. Total bloques: {len(blocks)}")
 
         except Exception as e:
+            self.logs(f"Error loading template: {e}")
             if self.mc:
                 self.mc.postToChat(f"Error al cargar template: {str(e)}")
 
@@ -227,6 +266,7 @@ class BuilerBot(BaseAgent):
     async def _publish_bom(self) -> None:
         """Publica el BOM en la cola de salida."""
         if self.bom is None:
+            self.logs("Cannot publish BOM: no template selected")
             if self.mc:
                 self.mc.postToChat("No hay template seleccionado")
             return
@@ -240,6 +280,8 @@ class BuilerBot(BaseAgent):
 
         self.enviarMensaje("MinerBot", bom_msg)
         self.bom_published = True
+
+        self.logs(f"BOM published to MinerBot: {self.bom}")
 
         if self.mc:
             self.mc.postToChat("Bill Of Materials:")
@@ -318,6 +360,7 @@ class BuilerBot(BaseAgent):
         Execute the decided action.
         """
         action = decision.get("action", "NO_OP")
+        reason = decision.get("reason", "")
 
         if action == "SEND_BOM":
             await self._publish_bom()
@@ -326,8 +369,21 @@ class BuilerBot(BaseAgent):
             await self._build_structure()
 
         elif action == "WAITING_FOR_MATERIALS":
-            # Just wait, do nothing
-            pass
+            # Cambiar a WAITING si no estamos ya en ese estado
+            if self.estadoActual != EstadoAgente.WAITING:
+                self.logs(f"Waiting for materials: {reason}")
+                if self.mc:
+                    self.mc.postToChat("[Builder] Esperando materiales del Miner...")
+                self.cambiarEstadoAgente(EstadoAgente.WAITING, razon=reason)
+
+        elif action == "WAITING_FOR_MAP":
+            # Cambiar a WAITING si falta el mapa del explorer
+            if self.estadoActual != EstadoAgente.WAITING:
+                self.logs(f"Waiting for map: {reason}")
+                if self.mc:
+                    self.mc.postToChat("[Builder] Esperando mapa del Explorer...")
+                    self.mc.postToChat("[Builder] Usa: $explorer start x=X z=Z range=R")
+                self.cambiarEstadoAgente(EstadoAgente.WAITING, razon=reason)
 
         elif action == "NO_OP":
             # Do nothing
@@ -336,16 +392,29 @@ class BuilerBot(BaseAgent):
     async def _build_structure(self) -> None:
         """Construye la estructura capa por capa."""
         if self.current_template is None or self.mc is None:
+            self.logs("Cannot build: no template or no minecraft connection")
             return
 
+        # Verificar que tenemos coordenadas del Explorer
         if self.coordenadasInicioTerrenoPlano is None or self.alturaPlanicie is None:
+            self.logs("Cannot build: no map data from explorer")
             if self.mc:
-                self.mc.postToChat("No hay información del terreno. Esperando mapa...")
+                self.mc.postToChat("[Builder] ❌ No hay información del terreno.")
+                self.mc.postToChat("[Builder] Usa: $explorer start x=X z=Z range=R")
+            # Cambiar a WAITING
+            self.cambiarEstadoAgente(EstadoAgente.WAITING, razon="Sin coordenadas de construcción")
             return
 
+        # Usar coordenadas del explorer
         start_x = self.coordenadasInicioTerrenoPlano['x']
         start_z = self.coordenadasInicioTerrenoPlano['z']
         start_y = self.alturaPlanicie
+        self.logs(f"Using map coordinates from Explorer: ({start_x}, {start_y}, {start_z})")
+
+        self.logs(f"Starting construction at ({start_x}, {start_y}, {start_z})")
+
+        if self.mc:
+            self.mc.postToChat(f"[Builder] Iniciando construcción en ({start_x}, {start_y}, {start_z})")
 
         # Ordenar bloques por capa
         blocks = sorted(self.current_template['blocks'], key=lambda b: b['layer'])
@@ -377,6 +446,50 @@ class BuilerBot(BaseAgent):
         self.pending_build = False
         self.bom_published = False
         self.current_template = None
+        self.available_materials = None
 
         if self.mc:
             self.mc.postToChat("Construcción completada!")
+
+        # Cambiar a IDLE esperando nuevo plan
+        self.cambiarEstadoAgente(EstadoAgente.IDLE, razon="Construcción completada, esperando nuevo plan")
+
+    # ============================================================================
+    # ENTRY POINT: Función de proceso
+    # ============================================================================
+
+    @staticmethod
+    def agent_process_main(in_queue: Queue, q_explorer: Queue, q_miner: Queue, q_builder: Queue, **kwargs):
+        """Función de entrada que recibe todos los parametros para lanzar el proceso por separado"""
+
+        mc = None
+        mc_host = kwargs.get("mc_host", "localhost")
+        mc_port = kwargs.get("mc_port", 4711)
+
+        try:
+            from mcpi.minecraft import Minecraft
+            mc = Minecraft.create(mc_host, mc_port)
+            print(f"El BuilderBot se ha conseguido conectar al mundo {mc_host}:{mc_port}")
+        except Exception as e:
+            print(f"El BuilderBot NO se ha conseguido conectar: {e}")
+            mc = None
+
+        # Crear instancia del builder
+        bot = BuilerBot(
+            "BuilderBot",
+            in_queue,
+            q_explorer,
+            q_miner,
+            q_builder
+        )
+
+        # Si se pudo conectar, actualizar la instancia mc
+        if mc:
+            bot.mc = mc
+
+        # Iniciar el agente (usa el ciclo perceive-decide-act de BaseAgent)
+        try:
+            import asyncio
+            asyncio.run(bot.iniciarAgente())
+        except KeyboardInterrupt:
+            bot.logs("KeyboardInterrupt in process")

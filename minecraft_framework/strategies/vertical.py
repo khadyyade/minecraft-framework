@@ -17,6 +17,17 @@ class VerticalMiningStrategy:
         state: Dict[str, Any],
         missing: Dict[str, int],
     ) -> Tuple[Optional[Tuple[int, int, int]], Dict[str, Any]]:
+        """
+        Estrategia de minado vertical simple.
+
+        Cava una columna vertical desde origin_y hacia abajo hasta max_depth.
+        Cuando termina la columna, retorna None.
+
+        El AGENTE (en decide) es responsable de:
+        - Detectar cuando retorna None
+        - Decidir si cambiar de posición
+        - Actualizar origin_x/origin_z para nueva columna
+        """
         new_state = dict(state)
 
         origin_x = new_state.get("origin_x")
@@ -30,6 +41,7 @@ class VerticalMiningStrategy:
 
         y = origin_y - current_depth
 
+        # Si alcanzamos max_depth o llegamos a y=0, terminar columna
         if current_depth >= max_depth or y <= 0:
             return None, new_state
 

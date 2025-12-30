@@ -60,3 +60,4 @@ htmlcov/
 *.bak
 *.tmp
 .cache/
+*.md

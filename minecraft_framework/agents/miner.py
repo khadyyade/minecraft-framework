@@ -1,8 +1,9 @@
+import asyncio
 from multiprocessing import Queue
 from typing import Dict, Any, Optional
 from mcpi.minecraft import Minecraft
 import mcpi.block as block
-from minecraft_framework.baseAgent import BaseAgent, AgentState
+from minecraft_framework.baseAgent import BaseAgent, EstadoAgente
 from minecraft_framework.strategies import MiningStrategy, VerticalMiningStrategy, GridMiningStrategy, VeinMiningStrategy
 from minecraft_framework.block_parser import block_to_material
 
@@ -28,8 +29,8 @@ class Miner(BaseAgent):
         # Last control command
         self.last_control: str = ""
 
-        # Connection to Minecraft
-        self.mc = Minecraft.create()
+        # Connection to Minecraft (se inicializa después)
+        self.mc = None
 
         #  Strategy Pattern: available mining strategies
         self.strategies: Dict[str, MiningStrategy] = {
@@ -93,6 +94,10 @@ class Miner(BaseAgent):
             if msg is None or msg == "":
                 break
 
+            # DEBUG: Mostrar en chat que se recibió un mensaje
+            if self.mc and msg.get("type"):
+                self.mc.postToChat(f"[Miner] MSG: {msg.get('type')}")
+
             # Control message
             # Shape: { 'type': 'control', 'target': 'MinerBot', 'payload': { 'cmd': '...' } }
             if msg.get("type") == "control":
@@ -108,30 +113,42 @@ class Miner(BaseAgent):
 
                     # /miner status: send a summary in the Minecraft chat
                     if cmd == "status":
+                        status_msg = f"[Miner] state={self.estadoActual.name}, inventory={self.inventory}"
+                        self.logs(f"STATUS: {status_msg}")
                         if self.mc:
-                            self.mc.postToChat(
-                                f"[Miner] state={self.state.name}, inventory={self.inventory}"
-                            )
+                            self.mc.postToChat(status_msg)
                         continue
 
                     # /miner set strategy, /miner start, /miner fulfill
                     if cmd == "update":
                         args = payload.get("args", {})
+                        debeCambiarARunning = False
+                        self.logs(f"[PERCEIVE] Received update command with args: {args}")
 
                         # /miner set strategy <name>
                         if "strategy" in args:
                             # Accept optional grid dimensions when provided
                             gw = args.get("grid_width")
                             gl = args.get("grid_length")
-                            self.set_strategy(args["strategy"], gw, gl)
+                            strategy_name = args["strategy"]
+                            self.logs(f"Setting strategy to: {strategy_name}")
+                            result = self.set_strategy(strategy_name, gw, gl)
+                            self.logs(f"Strategy set result: {result}, strategy_setted={self.strategy_setted}, current_strategy_name={self.current_strategy_name}")
 
                         # /miner start x,z,y
                         if "start" in args:
                             coords = args["start"]
                             pos = None
+
+                            # Intentar obtener posición del jugador si mc está disponible
                             try:
-                                pos = self.mc.player.getTilePos()
-                            except Exception:
+                                if self.mc:
+                                    pos = self.mc.player.getTilePos()
+                                    self.logs(f"Player position: x={pos.x}, y={pos.y}, z={pos.z}")
+                                else:
+                                    self.logs("WARNING: mc is None, cannot get player position")
+                            except Exception as e:
+                                self.logs(f"Error getting player position: {e}")
                                 pos = None
 
                             # If a coordinate is missing, we fallback to the player position.
@@ -152,6 +169,7 @@ class Miner(BaseAgent):
 
                             self.start_executed = True
                             self.sent_start_warning = False
+                            debeCambiarARunning = True
                             self.logs(
                                 f"Start mining from command: origin_x={x}, "
                                 f"origin_z={z}, origin_y={y}"
@@ -173,9 +191,14 @@ class Miner(BaseAgent):
                                 self.strategy_setted = True
                                 self.fulfill_executed = True
                                 self.sent_start_warning = False
+                                debeCambiarARunning = True
                                 self.logs("[Miner] fulfill mode activated from command")
                             except Exception:
                                 self.logs("Could not activate fulfill mode (no player position)")
+
+                        # Cambiar a RUNNING si se ha ejecutado start o fulfill
+                        if debeCambiarARunning:
+                            self.gestionarControles(payload)
 
                     self.last_control = cmd
                 else:
@@ -241,9 +264,13 @@ class Miner(BaseAgent):
         if not self.can_mine():
             decision["type"] = "NO_OP"
             if not self.strategy_setted:
-                decision["reason"] = "Strategy not defined (use \\miner set strategy <strategy>)"
-            if not (self.start_executed or self.fulfill_executed):
-                decision["reason"] = "Start mining from chat (use \\miner start x=<x> z=<z> y=<y> or use \\miner fulfill)"
+                decision["reason"] = "Strategy not defined (use $miner set strategy <strategy>)"
+            elif not (self.start_executed or self.fulfill_executed):
+                decision["reason"] = "Start mining from chat (use $miner start x=<x> z=<z> y=<y> or use $miner fulfill)"
+            else:
+                decision["reason"] = f"Cannot mine: strategy_setted={self.strategy_setted}, start_executed={self.start_executed}, no_target={self.no_target}"
+
+            self.logs(f"[DECIDE] Cannot mine: {decision['reason']}")
             return decision
 
         # 1) If a pause or stop control has been received, do not plan anything.
@@ -256,9 +283,14 @@ class Miner(BaseAgent):
 
         # 2) If we still have no requirements from the Builder, we wait.
         if not requirements:
-            self.cambiarEstadoAgente(
-                AgentState.WAITING, "No requirements received"
-            )
+            # Cambiar a WAITING siempre que no tengamos requirements
+            if self.estadoActual != EstadoAgente.WAITING:
+                self.cambiarEstadoAgente(
+                    EstadoAgente.WAITING, "No requirements received"
+                )
+                if self.mc:
+                    self.mc.postToChat("[Miner] Esperando requirements del Builder...")
+
             decision = {
                 "type": "WAITING_FOR_REQUIREMENTS",
                 "reason": "No materials to mine have been received yet",
@@ -287,6 +319,7 @@ class Miner(BaseAgent):
             "reason": "There are still missing materials",
             "missing": missing,
         }
+        self.logs(f"[DECIDE] Decision: MINE - missing materials: {missing}")
         return decision
 
     # ======================================================================
@@ -333,17 +366,30 @@ class Miner(BaseAgent):
             self.logs(f"REPORT_COMPLETED in act(): {reason}")
 
             # Notify the Builder that mining is done with current inventory
+            # Usar el mismo formato que durante el progreso
             msg = {
-                "type": "miner.completed.v1",
+                "type": "materials.inventory.v1",
                 "source": self.name,
                 "target": "BuilderBot",
-                "payload": {
-                    "inventory": self.inventory,
-                    "requirements": self.requirements,
-                },
-                "status": "DONE",
+                "payload": self.inventory,
+                "status": "COMPLETED",
             }
             self.enviarMensaje("BuilderBot", msg)
+
+            self.logs(f"Inventory final enviado al Builder: {self.inventory}")
+
+            if self.mc:
+                self.mc.postToChat(f"[Miner] Todos los materiales recolectados: {self.inventory}")
+                self.mc.postToChat("[Miner] Esperando nuevos requirements del Builder...")
+
+            # Cambiar a WAITING para esperar nuevos requirements
+            self.cambiarEstadoAgente(EstadoAgente.WAITING, razon="Tarea completada, esperando nuevos requirements")
+
+            # Resetear flags para nueva tarea
+            self.start_executed = False
+            self.fulfill_executed = False
+            self.no_target = False
+
             return
 
         # 4) MINE
@@ -362,11 +408,51 @@ class Miner(BaseAgent):
             if target is None:
                 self.logs(
                     "Strategy returned no target (None). "
-                    "Stopping mining for now."
+                    "Columna completada."
                 )
 
-                # Para 'vein' no marcamos no_target permanente: puede seguir intentando
-                # buscar nuevas vetas en ciclos posteriores.
+                # Si aún faltan materiales, intentar cambiar de columna
+                if missing:
+                    # Contar cuántas columnas hemos minado
+                    columns_mined = self.strategy_state.get("columns_mined", 0)
+                    max_columns = self.strategy_state.get("max_columns", 10)
+
+                    if columns_mined < max_columns:
+                        # Moverse a la siguiente columna
+                        origin_x = self.strategy_state.get("origin_x", 0)
+                        origin_z = self.strategy_state.get("origin_z", 0)
+                        column_spacing = self.strategy_state.get("column_spacing", 1)
+
+                        # Incrementar X para la siguiente columna
+                        self.strategy_state["origin_x"] = origin_x + column_spacing
+                        self.strategy_state["current_depth"] = 0
+                        self.strategy_state["columns_mined"] = columns_mined + 1
+
+                        self.logs(f"Cambiando a columna {columns_mined + 1}/{max_columns} en x={origin_x + column_spacing}, z={origin_z}")
+
+                        if self.mc:
+                            self.mc.postToChat(f"[Miner] Columna {columns_mined + 1}/{max_columns} - Materiales faltantes: {missing}")
+
+                        # Continuar minando en la siguiente columna
+                        return
+                    else:
+                        # Ya minamos todas las columnas permitidas
+                        self.logs(f"Alcanzado límite de {max_columns} columnas. Deteniendo.")
+
+                        if self.mc:
+                            self.mc.postToChat(f"[Miner] {max_columns} columnas completadas.")
+                            self.mc.postToChat(f"[Miner] Materiales faltantes: {missing}")
+                            self.mc.postToChat("[Miner] Cambiando a estado WAITING.")
+
+                        # Cambiar a WAITING para que el usuario decida qué hacer
+                        self.cambiarEstadoAgente(EstadoAgente.WAITING, razon=f"Completadas {max_columns} columnas, materiales aún faltantes")
+                        columns_mined = 0
+                        return
+                else:
+                    # Ya tenemos todos los materiales
+                    self.logs("Columna completada y todos los materiales obtenidos.")
+
+                # Para 'vein' no marcamos no_target permanente
                 if self.current_strategy_name != "vein":
                     self.no_target = True
                 return
@@ -448,7 +534,7 @@ class Miner(BaseAgent):
 
                 # Notify the Builder with updated inventory
                 msg = {
-                    "type": "inventory.v1",
+                    "type": "materials.inventory.v1",
                     "source": self.name,
                     "target": "BuilderBot",
                     "payload": self.inventory,
@@ -464,7 +550,10 @@ class Miner(BaseAgent):
             return
 
     def can_mine (self) -> bool:
-        return (self.start_executed or  self.fulfill_executed) and  self.strategy_setted and not self.no_target
+        result = (self.start_executed or  self.fulfill_executed) and  self.strategy_setted and not self.no_target
+        if not result:
+            self.logs(f"can_mine()=False: start={self.start_executed}, fulfill={self.fulfill_executed}, strategy={self.strategy_setted}, no_target={self.no_target}")
+        return result
     # ======================================================================
     #  UTILITIES
     # ======================================================================
@@ -525,6 +614,10 @@ class Miner(BaseAgent):
             "max_depth": self.max_depth,
         })
 
+        # Reset columns_mined para vertical strategy
+        if target_strategy == "vertical":
+            self.strategy_state["columns_mined"] = 0
+
         # Preserve / ensure grid dimensions if grid strategy
         if target_strategy == "grid":
             self.strategy_state.setdefault("grid_width", self.strategy_state.get("grid_width", 3))
@@ -546,6 +639,12 @@ class Miner(BaseAgent):
         self.strategy_state.setdefault("origin_z", None)
         self.strategy_state.setdefault("origin_y", None)
 
+        # Vertical-specific defaults
+        if name == "vertical":
+            self.strategy_state.setdefault("column_spacing", 1)
+            self.strategy_state.setdefault("max_columns", 10)
+            self.strategy_state.setdefault("columns_mined", 0)
+
         # Grid-specific defaults
         if name == "grid":
             if grid_width is not None:
@@ -558,5 +657,42 @@ class Miner(BaseAgent):
             else:
                 self.strategy_state.setdefault("grid_length", 3)
 
-    def logs(self, param):
-        self.estadoActual(str(param))
+    # ============================================================================
+    # ENTRY POINT: Función de proceso
+    # ============================================================================
+
+    @staticmethod
+    def agent_process_main(in_queue: Queue, q_explorer: Queue, q_miner: Queue, q_builder: Queue, **kwargs):
+        """Función de entrada que recibe todos los parametros para lanzar el proceso por separado"""
+
+        mc = None
+        mc_host = kwargs.get("mc_host", "localhost")
+        mc_port = kwargs.get("mc_port", 4711)
+
+        try:
+            from mcpi.minecraft import Minecraft
+            mc = Minecraft.create(mc_host, mc_port)
+            print(f"El MinerBot se ha conseguido conectar al mundo {mc_host}:{mc_port}")
+        except Exception as e:
+            print(f"El MinerBot NO se ha conseguido conectar: {e}")
+            mc = None
+
+        # Crear instancia del miner
+        bot = Miner(
+            "MinerBot",
+            in_queue,
+            q_explorer,
+            q_miner,
+            q_builder
+        )
+
+        # Si se pudo conectar, actualizar la instancia mc
+        if mc:
+            bot.mc = mc
+
+        # Iniciar el agente (usa el ciclo perceive-decide-act de BaseAgent)
+        try:
+            import asyncio
+            asyncio.run(bot.iniciarAgente())
+        except KeyboardInterrupt:
+            bot.logs("KeyboardInterrupt in process")

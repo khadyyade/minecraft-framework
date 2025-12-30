@@ -7,11 +7,11 @@ def parse_command(text: str) -> Dict[str, Any]:
     """Parse simple commands and return a structured dict.
 
     Examples:
-      - '\agent stop'
-      - '\explorer start x=0 z=0'
-      - '\miner start x=10 z=5 y=64'
+      - '$agent stop'
+      - '$explorer start x=0 z=0'
+      - '$miner start x=10 z=5 y=64'
 
-    Command prefix must be a single backslash: '\'
+    Command prefix is: '$'
     """
     text = text.strip()
     if not text:
@@ -40,7 +40,7 @@ def parse_command(text: str) -> Dict[str, Any]:
             return {
                 "type": "control",
                 "target": "ExplorerBot",
-                "payload": {"cmd": "update", "args": args},
+                "payload": {"cmd": "update", "args": {"start": args}},
             }
         if sub == "stop":
             return {
@@ -52,6 +52,18 @@ def parse_command(text: str) -> Dict[str, Any]:
             return {"type": "control", "target": "ExplorerBot", "payload": {"cmd": "pause"}}
         if sub == "resume":
             return {"type": "control", "target": "ExplorerBot", "payload": {"cmd": "resume"}}
+        if sub == "status":
+            return {"type": "control", "target": "ExplorerBot", "payload": {"cmd": "status"}}
+        if sub == "set" and len(parts) >= 3 and parts[2] == "range":
+            try:
+                range_value = int(parts[3])
+                return {
+                    "type": "control",
+                    "target": "ExplorerBot",
+                    "payload": {"cmd": "update", "args": {"range": range_value}},
+                }
+            except (IndexError, ValueError):
+                pass
 
     # --------------------------------------------------
     # Miner CLI: \miner ...
@@ -64,6 +76,9 @@ def parse_command(text: str) -> Dict[str, Any]:
 
         if sub == "resume":
             return {"type": "control", "target": "MinerBot", "payload": {"cmd": "resume"}}
+
+        if sub == "stop":
+            return {"type": "control", "target": "MinerBot", "payload": {"cmd": "stop"}}
 
         if sub == "status":
             return {"type": "control", "target": "MinerBot", "payload": {"cmd": "status"}}
@@ -145,7 +160,7 @@ def parse_command(text: str) -> Dict[str, Any]:
                 return {
                     "type": "control",
                     "target": "BuilderBot",
-                    "payload": {"cmd": "update", "args": {"plan set": True, 1: template_name}}
+                    "payload": {"cmd": "update", "args": {"plan_set": template_name}}
                 }
 
         # Bill of Materials: \builder bom

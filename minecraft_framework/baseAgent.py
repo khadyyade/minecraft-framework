@@ -71,8 +71,7 @@ class BaseAgent:
             "cycle_count": 0
         }
         
-        # Task asyncio del ciclo principal (para cancelación instantánea)
-        self.ciclo_task: Optional[asyncio.Task] = None
+        # Task asyncio de lectura de mensajes (para cancelación instantánea)
         self.mensaje_task: Optional[asyncio.Task] = None
 
     ############################
@@ -119,30 +118,27 @@ class BaseAgent:
             # Solo pausamos si estamos en RUN
             if self.estadoActual == EstadoAgente.RUNNING:
                 self.cambiarEstadoAgente(EstadoAgente.PAUSED, razon="pausado por el usuario")
-                # Cancelar inmediatamente el ciclo actual
-                if self.ciclo_task and not self.ciclo_task.done():
-                    self.ciclo_task.cancel()
+
         elif cmd == "resume":
             # Solo volvemos a lanzar si estamos pausados
             if self.estadoActual == EstadoAgente.PAUSED:
                 self.cambiarEstadoAgente(EstadoAgente.RUNNING, razon="relanzado por el usuario")
+
         elif cmd == "stop":
             # Se pude parar en cualquier momento
             self.logs("Parada solicitada")
             self.solicitudParada = True
             self.cambiarEstadoAgente(EstadoAgente.STOPPED, razon="detenido por el usuario")
-            # Cancelar inmediatamente todas las tareas
-            if self.ciclo_task and not self.ciclo_task.done():
-                self.ciclo_task.cancel()
+            # Cancelar task de mensajes
             if self.mensaje_task and not self.mensaje_task.done():
                 self.mensaje_task.cancel()
+
         elif cmd == "update":
             # Estar en update puede implicar que le llege un nuevo trabajo estando en espera o que se cambie el que está haciendo ahora mismo
             self.logs(f"Actualización recibida: {control.get('args')}")
-            self.cambiarEstadoAgente(EstadoAgente.RUNNING, razon="se han recibido nuevos parametros")
-            # Cancelar ciclo actual para que empiece con nueva config
-            if self.ciclo_task and not self.ciclo_task.done():
-                self.ciclo_task.cancel()
+            # Cambiar a RUNNING solo si no estaba ya en RUNNING
+            if self.estadoActual != EstadoAgente.RUNNING:
+                self.cambiarEstadoAgente(EstadoAgente.RUNNING, razon="se han recibido nuevos parametros")
         else:
             self.logs(f"Estado desconocido: {cmd}")
 
@@ -178,44 +174,27 @@ class BaseAgent:
     # Lee mensajes continuamente en paralelo al ciclo principal
     # Esto permite respuesta INSTANTÁNEA a comandos
     async def _leer_mensajes_continuamente(self):
-        """Task que lee mensajes de forma continua y reacciona inmediatamente."""
-        loop = asyncio.get_running_loop()
-        
-        while not self.solicitudParada:
-            try:
-                # Leer mensaje sin bloquear
-                raw = await loop.run_in_executor(None, self.obtenerMensajeNoWait)
-                
-                if raw is not None:
-                    # Parsear mensaje
-                    try:
-                        msg = json.loads(raw)
-                    except Exception:
-                        msg = raw
-                    
-                    # Procesar según tipo de mensaje
-                    if isinstance(msg, dict):
-                        if "cmd" in msg:
-                            # Es un comando de control - procesarlo inmediatamente
-                            self.gestionarControles(msg)
-                        else:
-                            # Otros mensajes - se pueden procesar en perceive()
-                            # (los agentes hijos pueden sobrescribir este comportamiento)
-                            pass
-                
-                # Pequeña pausa para no saturar CPU
-                await asyncio.sleep(0.05)
-                
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                self.logs(f"Error leyendo mensajes: {e}")
-                await asyncio.sleep(0.1)
+        """
+        Task que lee mensajes de forma continua y reacciona inmediatamente.
 
-    # Inicia el agente, cambia a estado RUNNING y ejecuta la tarea principal
+        IMPORTANTE: Esta función NO debe CONSUMIR los mensajes.
+        Solo debe:
+        1. Peekar la cola
+        2. Si hay un mensaje de control con cmd, cambiar el estado
+        3. Dejar el mensaje en la cola para que perceive() lo procese
+
+        El problema anterior era que consumíamos el mensaje aquí,
+        entonces perceive() nunca lo veía y los args no se procesaban.
+        """
+        # DESACTIVAR esta función - causa más problemas que los que resuelve
+        # Los mensajes deben procesarse SOLO en perceive()
+        return
+
+
+    # Inicia el agente en estado IDLE y ejecuta la tarea principal
     async def iniciarAgente(self):
         
-        self.cambiarEstadoAgente(EstadoAgente.RUNNING, razon="Iniciando bucle principal ")
+        self.logs("Iniciando bucle principal en estado IDLE")
         try:
             await self._run_task()
         except Exception as e:
@@ -241,6 +220,7 @@ class BaseAgent:
         Usa State Pattern para las fases
         
         Estados posibles:
+            IDLE        Esperando comandos sin ejecutar nada
             RUNNING     Ejecuta el ciclo perceive-decide-act
             PAUSED      Espera sin ejecutar el ciclo
             WAITING     Espera por condiciones externas
@@ -264,23 +244,49 @@ class BaseAgent:
             
             # Gestión de estados del agente
             
-            if self.estadoActual == EstadoAgente.RUNNING:
-                # ESTADO RUNNING: Ejecutar ciclo perceive-decide-act como task cancelable
-                self.ciclo_task = asyncio.create_task(self.ejecutarEstrategias())
+            if self.estadoActual == EstadoAgente.IDLE:
+                # ESTADO IDLE: Leer mensajes pero no ejecutar decide/act
+                # Esto permite que los comandos cambien el estado a RUNNING
+                self.faseActual = FaseEstado.IDLE
                 try:
-                    await self.ciclo_task
+                    # Solo ejecutar perceive para leer mensajes
+                    await self.perceive()
+                except Exception as e:
+                    self.logs(f"Error en perceive (IDLE): {e}")
+                await asyncio.sleep(0.1)
+
+            elif self.estadoActual == EstadoAgente.RUNNING:
+                # ESTADO RUNNING: Ejecutar ciclo perceive-decide-act continuamente
+                # El ciclo se ejecuta mientras el estado sea RUNNING
+                try:
+                    await self.ejecutarEstrategias()
                 except asyncio.CancelledError:
                     self.logs(f"Ciclo cancelado en fase {self.faseActual.value}")
                     # Continuar con el siguiente estado
-                    
+                except Exception as e:
+                    self.logs(f"Error en ciclo RUNNING: {e}")
+                    await asyncio.sleep(0.1)
+
             elif self.estadoActual == EstadoAgente.PAUSED:
-                # ESTADO PAUSED: Esperar sin hacer nada
+                # ESTADO PAUSED: Leer mensajes para poder reactivarse
+                # Similar a IDLE, debe poder procesar comandos como "resume" o "update"
                 self.faseActual = FaseEstado.IDLE
-                await asyncio.sleep(0.5)
-                
+                try:
+                    # Ejecutar perceive para leer mensajes
+                    await self.perceive()
+                except Exception as e:
+                    self.logs(f"Error en perceive (PAUSED): {e}")
+                await asyncio.sleep(0.2)
+
             elif self.estadoActual == EstadoAgente.WAITING:
-                # ESTADO WAITING: Esperar condiciones externas
+                # ESTADO WAITING: Esperar condiciones externas pero leer mensajes
+                # Debe poder recibir requirements del builder o comandos del usuario
                 self.faseActual = FaseEstado.IDLE
+                try:
+                    # Ejecutar perceive para leer mensajes
+                    await self.perceive()
+                except Exception as e:
+                    self.logs(f"Error en perceive (WAITING): {e}")
                 await asyncio.sleep(0.2)
                     
             elif self.estadoActual == EstadoAgente.STOPPED:
@@ -345,10 +351,9 @@ class BaseAgent:
             # Incrementar contador de ciclos
             self.context["cycle_count"] += 1
             
-            # Pequeña pausa entre ciclos para no saturar CPU
-            # Ponemos await para que sea sincrono
-            await asyncio.sleep(0.05)
-            
+            # Dar oportunidad a otras tareas asyncio (yield control)
+            await asyncio.sleep(0)
+
         except NotImplementedError as e:
             # El agente hijo no implementó perceive/decide/act
             self.logs(f" {e}")
