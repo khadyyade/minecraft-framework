@@ -1,11 +1,23 @@
 import asyncio
+import importlib
 from multiprocessing import Queue
 from typing import Dict, Any, Optional
 from mcpi.minecraft import Minecraft
 import mcpi.block as block
-from minecraft_framework.baseAgent import BaseAgent, EstadoAgente
-from minecraft_framework.strategies import MiningStrategy, VerticalMiningStrategy, GridMiningStrategy, VeinMiningStrategy
-from minecraft_framework.block_parser import block_to_material
+
+# Cargar clases del framework con reflection
+baseAgent_module = importlib.import_module('minecraft_framework.baseAgent')
+BaseAgent = getattr(baseAgent_module, 'BaseAgent')
+EstadoAgente = getattr(baseAgent_module, 'EstadoAgente')
+
+strategies_module = importlib.import_module('minecraft_framework.strategies')
+MiningStrategy = getattr(strategies_module, 'MiningStrategy')
+VerticalMiningStrategy = getattr(strategies_module, 'VerticalMiningStrategy')
+GridMiningStrategy = getattr(strategies_module, 'GridMiningStrategy')
+VeinMiningStrategy = getattr(strategies_module, 'VeinMiningStrategy')
+
+block_parser_module = importlib.import_module('minecraft_framework.block_parser')
+block_to_material = getattr(block_parser_module, 'block_to_material')
 
 
 class Miner(BaseAgent):

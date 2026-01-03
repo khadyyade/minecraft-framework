@@ -1,5 +1,4 @@
-from minecraft_framework.baseAgent import BaseAgent, EstadoAgente
-from minecraft_framework.block_parser import material_to_block
+import importlib
 from mcpi.minecraft import Minecraft
 import mcpi.block as block
 from typing import Dict, Any, Optional
@@ -8,6 +7,14 @@ from collections import defaultdict
 import asyncio
 import csv
 import os
+
+# Cargar clases del framework con reflection
+baseAgent_module = importlib.import_module('minecraft_framework.baseAgent')
+BaseAgent = getattr(baseAgent_module, 'BaseAgent')
+EstadoAgente = getattr(baseAgent_module, 'EstadoAgente')
+
+block_parser_module = importlib.import_module('minecraft_framework.block_parser')
+material_to_block = getattr(block_parser_module, 'material_to_block')
 
 class BuilerBot(BaseAgent):
     def __init__(

@@ -32,7 +32,10 @@ import importlib
 from multiprocessing import Queue
 from typing import Dict, Any, List
 
-from minecraft_framework.baseAgent import BaseAgent, EstadoAgente
+# Cargar clases del framework con reflection
+baseAgent_module = importlib.import_module('minecraft_framework.baseAgent')
+BaseAgent = getattr(baseAgent_module, 'BaseAgent')
+EstadoAgente = getattr(baseAgent_module, 'EstadoAgente')
 
 class ExplorerBot(BaseAgent):
     

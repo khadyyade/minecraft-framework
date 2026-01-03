@@ -10,13 +10,17 @@
 
 import asyncio
 from multiprocessing import Process, Queue
+import importlib
 
 
 def _explorer_process(in_q: Queue, q_explorer: Queue, q_miner: Queue, q_builder: Queue):
     """Entry point del proceso del Explorer."""
-    from minecraft_framework.agents.explorer import ExplorerBot
-    from mcpi.minecraft import Minecraft
     import asyncio
+    from mcpi.minecraft import Minecraft
+
+    # Cargar ExplorerBot con reflection
+    explorer_module = importlib.import_module('minecraft_framework.agents.explorer')
+    ExplorerBot = getattr(explorer_module, 'ExplorerBot')
 
     # Conectar a Minecraft dentro del proceso
     try:
@@ -32,9 +36,12 @@ def _explorer_process(in_q: Queue, q_explorer: Queue, q_miner: Queue, q_builder:
 
 def _miner_process(in_q: Queue, q_explorer: Queue, q_miner: Queue, q_builder: Queue):
     """Entry point del proceso del Miner."""
-    from minecraft_framework.agents.miner import Miner
-    from mcpi.minecraft import Minecraft
     import asyncio
+    from mcpi.minecraft import Minecraft
+
+    # Cargar Miner con reflection
+    miner_module = importlib.import_module('minecraft_framework.agents.miner')
+    Miner = getattr(miner_module, 'Miner')
 
     # Conectar a Minecraft dentro del proceso
     try:
@@ -52,9 +59,12 @@ def _miner_process(in_q: Queue, q_explorer: Queue, q_miner: Queue, q_builder: Qu
 
 def _builder_process(in_q: Queue, q_explorer: Queue, q_miner: Queue, q_builder: Queue):
     """Entry point del proceso del Builder."""
-    from minecraft_framework.agents.builder import BuilerBot
-    from mcpi.minecraft import Minecraft
     import asyncio
+    from mcpi.minecraft import Minecraft
+
+    # Cargar BuilerBot con reflection
+    builder_module = importlib.import_module('minecraft_framework.agents.builder')
+    BuilerBot = getattr(builder_module, 'BuilerBot')
 
     # Conectar a Minecraft dentro del proceso
     try:
@@ -145,9 +155,11 @@ async def main():
     # ============================================================================
     # OPCIONAL: CONTROL REMOTO
     # ============================================================================
-    # Importar el módulo de control remoto
-    from remote_control import start_remote_server
     import threading
+
+    # Cargar el módulo de control remoto con reflection
+    remote_module = importlib.import_module('remote_control')
+    start_remote_server = getattr(remote_module, 'start_remote_server')
 
     # Iniciar servidor remoto en un thread separado
     remote_thread = threading.Thread(
@@ -183,7 +195,10 @@ async def main():
 
     # Arrancar ChatRouter
     print("[Main] Iniciando ChatRouter...")
-    from minecraft_framework.cli import ChatRouter
+
+    # Cargar ChatRouter con reflection
+    cli_module = importlib.import_module('minecraft_framework.cli')
+    ChatRouter = getattr(cli_module, 'ChatRouter')
 
     router = ChatRouter(mc, q_miner=q_miner, q_builder=q_builder, q_explorer=q_explorer)
 
