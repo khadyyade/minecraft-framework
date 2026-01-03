@@ -35,7 +35,7 @@ class Exploracion:
         self.mc = mc
         self.alturaMapa = altura_mapa
 
-    async def escanear_terreno_inicial(self, x: int, z: int, rango_scan: int) -> Dict[str, Any]:
+    async def escanear_terreno_inicial(self, x: int, z: int, rango_scan: int, agent=None) -> Dict[str, Any]:
         """
         Escanea el terreno y genera una matriz de alturas.
 
@@ -46,12 +46,14 @@ class Exploracion:
             x: Coordenada X central del escaneo
             z: Coordenada Z central del escaneo
             rango_scan: Radio de escaneo desde el centro
+            agent: Referencia al agente para verificar si debe detenerse
 
         Returns:
             Dict con:
                 - alturas: Matriz 2D con las alturas del terreno (-1 para agua)
                 - hay_arena: Booleano indicando si se detectó arena
                 - hay_arboles: Booleano indicando si se detectaron árboles
+                - stopped: True si fue detenido por solicitud de stop
         """
         try:
             # Mover jugador a la posición de escaneo (altura alta para ver todo)
@@ -72,6 +74,14 @@ class Exploracion:
 
             # Recorrer el terreno por filas y columnas
             for dx in range(-rango_scan, rango_scan + 1):
+                # Verificar si el agente debe detenerse (cada fila)
+                if agent and agent.solicitudParada:
+                    print(f"[Exploracion] Escaneo interrumpido por solicitud de stop")
+                    return {"alturas": None, "hay_arena": False, "hay_arboles": False, "stopped": True}
+
+                # Ceder control al event loop cada fila para permitir procesamiento de mensajes
+                await asyncio.sleep(0)
+
                 row = []
                 for dz in range(-rango_scan, rango_scan + 1):
                     # Obtener altura del terreno y tipo de bloque en la superficie
@@ -110,12 +120,13 @@ class Exploracion:
             return {
                 "alturas": alturas,
                 "hay_arena": hay_arena,
-                "hay_arboles": hay_arboles
+                "hay_arboles": hay_arboles,
+                "stopped": False
             }
 
         except Exception as e:
             print(f"[Exploracion] Error durante el escaneo: {e}")
-            return {"alturas": None, "hay_arena": False, "hay_arboles": False}
+            return {"alturas": None, "hay_arena": False, "hay_arboles": False, "stopped": False}
 
 
     async def reubicar_aleatoriamente(self, x_nuevo: int, z_nuevo: int, rango_scan: int):
@@ -137,7 +148,7 @@ class Exploracion:
         await asyncio.sleep(0.5)
 
     async def probar_extensiones(self, x: int, z: int, rango_scan: int, extensiones: List[tuple],
-                                 alturas: List[List[int]], tam_planicie: int, tolerancia: int) -> bool:
+                                 alturas: List[List[int]], tam_planicie: int, tolerancia: int, agent=None) -> bool:
         """
         Prueba las extensiones encontradas para ver si generan una planicie válida.
 
@@ -151,6 +162,7 @@ class Exploracion:
             alturas: Matriz de alturas del escaneo inicial
             tam_planicie: Tamaño mínimo de planicie buscado
             tolerancia: Diferencia de altura máxima permitida
+            agent: Referencia al agente para verificar si debe detenerse
 
         Returns:
             True si se encontró una extensión válida, False en caso contrario
@@ -159,6 +171,11 @@ class Exploracion:
 
         # Probar cada extensión encontrada
         for extension in extensiones:
+            # Verificar si el agente debe detenerse
+            if agent and agent.solicitudParada:
+                print(f"[Exploracion] Verificación de extensiones interrumpida por solicitud de stop")
+                return False
+
             altura_ref, direccion, coords, longitud = extension
 
             # Calcular cuántas posiciones diferentes podemos probar en esta secuencia
@@ -166,6 +183,11 @@ class Exploracion:
 
             # Probar cada offset posible dentro de la secuencia
             for offset in range(num_posiciones):
+                # Verificar si el agente debe detenerse
+                if agent and agent.solicitudParada:
+                    print(f"[Exploracion] Verificación de extensiones interrumpida por solicitud de stop")
+                    return False
+
                 # Crear nueva extensión con el offset aplicado
                 i, j = coords
 

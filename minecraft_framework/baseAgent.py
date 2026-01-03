@@ -109,38 +109,56 @@ class BaseAgent:
         self.logs(f"Pasamos del estado {estadoAnterior.value} a {cmd.value}. {razon}")
 
     # Procesa los comandos de control (pause, resume, stop, update) y cambia el estado del agente
-    # AHORA CON RESPUESTA INSTANTÁNEA cancelando tareas asyncio
     def gestionarControles(self, control: Dict[str, Any]):
-        # Dentro de control, que es un diccionario (clave valor) tenemos algo así: {"cmd": "pause", "args": {}}
-        # Hacer el get de un String nos sava su respectivo valor
+        """
+        Gestiona comandos de control del agente.
+
+        Este método es principalmente para comandos que llegan a través de perceive(),
+        ya que pause/resume/stop son manejados inmediatamente por _leer_mensajes_continuamente().
+
+        Args:
+            control: Diccionario con cmd y args. Ejemplo: {"cmd": "pause", "args": {}}
+        """
         cmd = control.get("cmd")
+
         if cmd == "pause":
-            # Solo pausamos si estamos en RUN
-            if self.estadoActual == EstadoAgente.RUNNING:
+            # Pausar desde estados RUNNING o WAITING
+            if self.estadoActual in (EstadoAgente.RUNNING, EstadoAgente.WAITING):
                 self.cambiarEstadoAgente(EstadoAgente.PAUSED, razon="pausado por el usuario")
 
         elif cmd == "resume":
-            # Solo volvemos a lanzar si estamos pausados
+            # Reanudar solo si estamos pausados
             if self.estadoActual == EstadoAgente.PAUSED:
-                self.cambiarEstadoAgente(EstadoAgente.RUNNING, razon="relanzado por el usuario")
+                self.cambiarEstadoAgente(EstadoAgente.RUNNING, razon="reanudado por el usuario")
 
         elif cmd == "stop":
-            # Se pude parar en cualquier momento
-            self.logs("Parada solicitada")
+            # Detener en cualquier momento - MATAR EL PROCESO
+            self.logs("Solicitud de STOP recibida - MATANDO PROCESO")
             self.solicitudParada = True
             self.cambiarEstadoAgente(EstadoAgente.STOPPED, razon="detenido por el usuario")
-            # Cancelar task de mensajes
-            if self.mensaje_task and not self.mensaje_task.done():
-                self.mensaje_task.cancel()
+
+            # MATAR EL PROCESO INMEDIATAMENTE sin limpieza
+            import os
+            self.logs("TERMINANDO PROCESO CON os._exit()")
+            os._exit(0)  # FUERZA terminación INMEDIATA
 
         elif cmd == "update":
-            # Estar en update puede implicar que le llege un nuevo trabajo estando en espera o que se cambie el que está haciendo ahora mismo
+            # Recibir nuevos parámetros puede reactivar al agente
             self.logs(f"Actualización recibida: {control.get('args')}")
             # Cambiar a RUNNING solo si no estaba ya en RUNNING
             if self.estadoActual != EstadoAgente.RUNNING:
                 self.cambiarEstadoAgente(EstadoAgente.RUNNING, razon="se han recibido nuevos parametros")
+
+        elif cmd == "status":
+            # El comando status se maneja en perceive() de cada agente específico
+            pass
+
+        elif cmd == "help":
+            # El comando help se maneja en perceive() de cada agente específico
+            pass
+
         else:
-            self.logs(f"Estado desconocido: {cmd}")
+            self.logs(f"Comando desconocido: {cmd}")
 
     # Leer de la cola de entrada sin bloquear el loop asyncio
     async def leerMensaje(self):
@@ -175,21 +193,75 @@ class BaseAgent:
     # Esto permite respuesta INSTANTÁNEA a comandos
     async def _leer_mensajes_continuamente(self):
         """
-        Task que lee mensajes de forma continua y reacciona inmediatamente.
+        Lee mensajes de forma reactiva SOLO para comandos de control críticos.
 
-        IMPORTANTE: Esta función NO debe CONSUMIR los mensajes.
-        Solo debe:
-        1. Peekar la cola
-        2. Si hay un mensaje de control con cmd, cambiar el estado
-        3. Dejar el mensaje en la cola para que perceive() lo procese
+        Procesa INSTANTÁNEAMENTE:
+        - pause: Pausa el agente (cambia a PAUSED)
+        - resume: Reanuda el agente (cambia a RUNNING si estaba PAUSED)
+        - stop: Detiene el agente completamente y termina el proceso
+        - help: Muestra ayuda en el chat de Minecraft (delegado a perceive)
+        - status: Muestra estado actual del agente (delegado a perceive)
 
-        El problema anterior era que consumíamos el mensaje aquí,
-        entonces perceive() nunca lo veía y los args no se procesaban.
+        REENCOLA TODO LO DEMÁS para que perceive() lo procese.
+        Esto incluye: update, help, status, mensajes entre agentes (map.v1, materials.requirements.v1, etc)
         """
-        # DESACTIVAR esta función - causa más problemas que los que resuelve
-        # Los mensajes deben procesarse SOLO en perceive()
-        return
+        while not self.solicitudParada:
+            raw = self.obtenerMensajeNoWait()
+            if raw is None:
+                await asyncio.sleep(0.05)
+                continue
 
+            try:
+                parsed = json.loads(raw)
+            except Exception:
+                # No es JSON, reencolar
+                try:
+                    self.in_queue.put_nowait(raw)
+                except Exception:
+                    self.in_queue.put(raw)
+                await asyncio.sleep(0.05)
+                continue
+
+            # Solo procesar comandos de control críticos que requieren respuesta instantánea
+            if isinstance(parsed, dict) and parsed.get("type") == "control":
+                payload = parsed.get("payload", {})
+                cmd = payload.get("cmd")
+
+                # PAUSE: Pausar el agente inmediatamente
+                if cmd == "pause":
+                    if self.estadoActual == EstadoAgente.RUNNING:
+                        self.cambiarEstadoAgente(EstadoAgente.PAUSED, razon="pausado por el usuario")
+                    elif self.estadoActual == EstadoAgente.WAITING:
+                        self.cambiarEstadoAgente(EstadoAgente.PAUSED, razon="pausado por el usuario")
+                    continue  # Ya procesado, NO reencolar
+
+                # RESUME: Reanudar el agente inmediatamente
+                elif cmd == "resume":
+                    if self.estadoActual == EstadoAgente.PAUSED:
+                        self.cambiarEstadoAgente(EstadoAgente.RUNNING, razon="reanudado por el usuario")
+                    continue  # Ya procesado, NO reencolar
+
+                # STOP: Detener el agente completamente y MATAR EL PROCESO
+                elif cmd == "stop":
+                    self.logs("Solicitud de STOP recibida - MATANDO PROCESO INMEDIATAMENTE")
+                    self.solicitudParada = True
+                    self.cambiarEstadoAgente(EstadoAgente.STOPPED, razon="detenido por el usuario")
+
+                    # MATAR EL PROCESO INMEDIATAMENTE sin limpieza
+                    # os._exit() termina el proceso SIN ejecutar cleanup handlers
+                    # Es más agresivo que sys.exit() y funciona incluso si hay operaciones bloqueadas
+                    import os
+                    self.logs("TERMINANDO PROCESO AHORA CON os._exit()")
+                    os._exit(0)  # FUERZA terminación INMEDIATA del proceso
+
+
+            # TODO LO DEMÁS se reencola (update, status, help, mensajes entre agentes)
+            try:
+                self.in_queue.put_nowait(raw)
+            except Exception:
+                self.in_queue.put(raw)
+
+            await asyncio.sleep(0.05)
 
     # Inicia el agente en estado IDLE y ejecuta la tarea principal
     async def iniciarAgente(self):

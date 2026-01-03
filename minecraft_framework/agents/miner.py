@@ -94,10 +94,6 @@ class Miner(BaseAgent):
             if msg is None or msg == "":
                 break
 
-            # DEBUG: Mostrar en chat que se recibió un mensaje
-            if self.mc and msg.get("type"):
-                self.mc.postToChat(f"[Miner] MSG: {msg.get('type')}")
-
             # Control message
             # Shape: { 'type': 'control', 'target': 'MinerBot', 'payload': { 'cmd': '...' } }
             if msg.get("type") == "control":
@@ -109,6 +105,14 @@ class Miner(BaseAgent):
                     if cmd in ("pause", "resume", "stop"):
                         self.gestionarControles(payload)
                         self.last_control = cmd
+                        continue
+
+                    # help: mostrar comandos disponibles
+                    if cmd == "help":
+                        help_msg = "[MinerBot] Comandos: $miner start [x=<int> z=<int> y=<int>], $miner set strategy <vertical|grid|vein>, $miner fulfill, $miner pause, $miner resume, $miner status, $miner stop"
+                        self.logs(f"HELP: {help_msg}")
+                        if self.mc:
+                            self.mc.postToChat(help_msg)
                         continue
 
                     # /miner status: send a summary in the Minecraft chat
@@ -134,6 +138,8 @@ class Miner(BaseAgent):
                             self.logs(f"Setting strategy to: {strategy_name}")
                             result = self.set_strategy(strategy_name, gw, gl)
                             self.logs(f"Strategy set result: {result}, strategy_setted={self.strategy_setted}, current_strategy_name={self.current_strategy_name}")
+                            # Resetear warning para que pueda volver a advertir si es necesario
+                            self.sent_strategy_warning = False
 
                         # /miner start x,z,y
                         if "start" in args:
@@ -175,26 +181,41 @@ class Miner(BaseAgent):
                                 f"origin_z={z}, origin_y={y}"
                             )
 
-                        # Fulfill mode: /miner fulfill
+                        # Fulfill mode: $miner fulfill
+                        # HACK para demos: Llena automáticamente el inventario con los requirements
                         if args.get("mode") == "fulfill":
-                            try:
-                                pos = self.mc.player.getTilePos()
-                                # Ensure we are using the vertical strategy when fulfilling
-                                self.current_strategy = self.strategies.get("vertical", self.current_strategy)
-                                self.current_strategy_name = "vertical"
+                            self.logs("[Miner] FULFILL MODE: Auto-llenando inventario (HACK para demo)")
 
-                                # Merge origin coordinates into the existing state instead of
-                                # replacing it (preserve any other keys)
-                                self.update_strategy_state(pos.x + 1, pos.z, pos.y)
+                            # Si tenemos requirements, llenar el inventario automáticamente
+                            if self.requirements:
+                                # Copiar los requirements al inventario (hack: sin minar)
+                                self.inventory = self.requirements.copy()
+                                self.logs(f"Inventory auto-llenado: {self.inventory}")
 
-                                # Mark that a strategy has been set (vertical) and fulfill requested
-                                self.strategy_setted = True
-                                self.fulfill_executed = True
-                                self.sent_start_warning = False
-                                debeCambiarARunning = True
-                                self.logs("[Miner] fulfill mode activated from command")
-                            except Exception:
-                                self.logs("Could not activate fulfill mode (no player position)")
+                                # Enviar mensaje de inventory completado al Builder
+                                msg = {
+                                    "type": "materials.inventory.v1",
+                                    "source": self.name,
+                                    "target": "BuilderBot",
+                                    "payload": self.inventory,
+                                    "status": "COMPLETED",
+                                }
+                                self.enviarMensaje("BuilderBot", msg)
+
+                                if self.mc:
+                                    self.mc.postToChat(f"[Miner] HACK: Inventario auto-llenado con {self.inventory}")
+                                    self.mc.postToChat("[Miner] (Modo fulfill para demos)")
+
+                                # Cambiar a WAITING ya que la "tarea" está completa
+                                self.cambiarEstadoAgente(EstadoAgente.WAITING, razon="Fulfill completado (hack)")
+                            else:
+                                # No hay requirements aún
+                                self.logs("[Miner] FULFILL MODE: No hay requirements todavía")
+                                if self.mc:
+                                    self.mc.postToChat("[Miner] No hay requirements del Builder aun")
+                                    self.mc.postToChat("[Miner] Usa: $builder bom primero")
+
+                            continue
 
                         # Cambiar a RUNNING si se ha ejecutado start o fulfill
                         if debeCambiarARunning:
@@ -342,14 +363,31 @@ class Miner(BaseAgent):
             reason = decision.get("reason")
 
             if reason:
+                # Si falta start, mostrar mensaje una vez y cambiar a IDLE
                 if "Start mining from chat" in reason:
-                    if self.sent_start_warning:
-                        return
-                    self.sent_start_warning = True
+                    if not self.sent_start_warning:
+                        self.logs(f"NO_OP in act(): {reason}")
+                        if self.mc:
+                            self.mc.postToChat("[Miner] Usa $miner start [x=<x> z=<z> y=<y>] para empezar a minar")
+                        self.sent_start_warning = True
+                    # Cambiar a IDLE para detener el ciclo
+                    if self.estadoActual == EstadoAgente.RUNNING:
+                        self.cambiarEstadoAgente(EstadoAgente.IDLE, razon="esperando comando start")
+                    return
+
+                # Si falta estrategia, mostrar mensaje una vez y cambiar a IDLE
                 if "Strategy not defined" in reason:
-                    if self.sent_strategy_warning:
-                        return
-                    self.sent_strategy_warning = True
+                    if not self.sent_strategy_warning:
+                        self.logs(f"NO_OP in act(): {reason}")
+                        if self.mc:
+                            self.mc.postToChat("[Miner] Usa $miner set strategy <vertical|grid|vein> para definir estrategia")
+                        self.sent_strategy_warning = True
+                    # Cambiar a IDLE para detener el ciclo
+                    if self.estadoActual == EstadoAgente.RUNNING:
+                        self.cambiarEstadoAgente(EstadoAgente.IDLE, razon="esperando estrategia de minado")
+                    return
+
+            # Otros casos de NO_OP
             self.logs(f"NO_OP in act(): {reason}")
             return
 
@@ -395,6 +433,9 @@ class Miner(BaseAgent):
         # 4) MINE
         if action_type == "MINE":
             missing = decision.get("missing", {})
+
+            # DEBUG: Mostrar qué estrategia está usando
+            self.logs(f"[MINE] Using strategy: {self.current_strategy_name}, state: {self.strategy_state}")
 
             # Ask the strategy for the next target block to mine
             target, new_state = self.current_strategy.next_target(
@@ -582,6 +623,7 @@ class Miner(BaseAgent):
         self.sent_strategy_warning = False
 
         self.logs(f"Strategy changed to '{name}' (keeping coordinates).")
+        self.logs(f"[DEBUG] Strategy state after set_strategy: {self.strategy_state}")
         if self.mc:
             self.mc.postToChat(f"[Miner] Strategy set to {name}")
         return True

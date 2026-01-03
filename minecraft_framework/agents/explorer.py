@@ -127,6 +127,14 @@ class ExplorerBot(BaseAgent):
                         self.gestionarControles(payload)
                         continue
 
+                    # help: mostrar comandos disponibles
+                    if cmd == "help":
+                        help_msg = "[ExplorerBot] Comandos: $explorer start [x=<int> z=<int> range=<int>], $explorer stop, $explorer pause, $explorer resume, $explorer status, $explorer set range <int>"
+                        self.logs(f"HELP: {help_msg}")
+                        if self.mc:
+                            self.mc.postToChat(help_msg)
+                        continue
+
                     # status: send a summary in the Minecraft chat
                     if cmd == "status":
                         status_msg = f"[Explorer] state={self.estadoActual.name}, pos=({self.x},{self.z}), range={self.rangoScan}"
@@ -139,15 +147,47 @@ class ExplorerBot(BaseAgent):
                     if cmd == "update":
                         args = payload.get("args", {})
 
-                        # /explorer start x=<int> z=<int> [range=<int>]
+                        # $explorer set range <int>
+                        # Debe procesarse ANTES de start para que tenga efecto
+                        if "range" in args and "start" not in args:
+                            # Solo set range (sin start)
+                            self.rangoScan = args["range"]
+                            self.logs(f"Range updated to {self.rangoScan}")
+                            if self.mc:
+                                self.mc.postToChat(f"[Explorer] Rango actualizado a {self.rangoScan}")
+
+                        # $explorer start x=<int> z=<int> [range=<int>]
                         if "start" in args:
                             coords = args["start"]
-                            self.x = coords.get("x", self.x)
-                            self.z = coords.get("z", self.z)
+
+                            # Si no se pasan coordenadas, usar posición del jugador
+                            if not coords or (coords.get("x") is None and coords.get("z") is None):
+                                try:
+                                    if self.mc:
+                                        pos = self.mc.player.getTilePos()
+                                        self.x = pos.x
+                                        self.z = pos.z
+                                        self.logs(f"Using player position: x={self.x}, z={self.z}")
+                                    else:
+                                        self.logs("WARNING: mc is None, using default coordinates (0, 0)")
+                                        self.x = 0
+                                        self.z = 0
+                                except Exception as e:
+                                    self.logs(f"Error getting player position: {e}, using default (0, 0)")
+                                    self.x = 0
+                                    self.z = 0
+                            else:
+                                # Usar coordenadas del comando o mantener actuales
+                                self.x = coords.get("x", self.x)
+                                self.z = coords.get("z", self.z)
+
+                            # Actualizar range SOLO si viene especificado en el comando start
+                            # Si NO viene, mantener el valor actual (que puede haber sido configurado con set range)
                             if "range" in coords:
                                 self.rangoScan = coords["range"]
+                            # Si no viene range, self.rangoScan mantiene su valor actual
 
-                            # Resetear estado
+                            # Resetear estado de exploración
                             self.escaneoInicial = False
                             self.alturasActuales = None
                             self.zonasPlanas = []
@@ -155,14 +195,12 @@ class ExplorerBot(BaseAgent):
                             msgPerception["datosEscaneo"] = None
 
                             self.logs(f"Start exploration from command: x={self.x}, z={self.z}, range={self.rangoScan}")
+                            if self.mc:
+                                self.mc.postToChat(f"[Explorer] Iniciando exploración en ({self.x}, {self.z}) con rango {self.rangoScan}")
 
                             # Cambiar a RUNNING
                             self.gestionarControles(payload)
 
-                        # /explorer set range <int>
-                        if "range" in args:
-                            self.rangoScan = args["range"]
-                            self.logs(f"Range updated to {self.rangoScan}")
 
                         continue
 
@@ -356,7 +394,14 @@ class ExplorerBot(BaseAgent):
         
         if action == "initial_scan":
             # Ejecutar con la instancia que tenemos de la clase exploración
-            resultado = await self.exploracion.escanear_terreno_inicial(self.x, self.z, self.rangoScan)
+            # Pasamos self para que pueda verificar solicitudParada
+            resultado = await self.exploracion.escanear_terreno_inicial(self.x, self.z, self.rangoScan, agent=self)
+
+            # Verificar si fue detenido
+            if resultado.get("stopped", False):
+                self.logs("Escaneo interrumpido por solicitud de stop")
+                return
+
             # Guardar los resultados
             self.alturasActuales = resultado["alturas"]
             self.hayArena = resultado["hay_arena"]
@@ -376,8 +421,8 @@ class ExplorerBot(BaseAgent):
         elif action == "success":
             pos_planicie = params.get("pos_planicie")
             self.logs(f"SUCCESS: Planicie encontrada en {pos_planicie}")
-            self.estadoActual("STOPPED")    # Paramos cuando encontremos un
-            
+            self.cambiarEstadoAgente(EstadoAgente.STOPPED, razon="planicie encontrada")    # Paramos cuando encontremos una
+
         elif action == "extend":
             extensiones = params.get("extensiones")
             datosEscaneo = params.get("datosEscaneo")
@@ -387,14 +432,20 @@ class ExplorerBot(BaseAgent):
                 self.logs(f"Probando {len(extensiones)} posibles extensiones")
                 
                 # Delegar verificación de extensiones a la clase Exploracion
+                # Pasamos self para que pueda verificar solicitudParada
                 extension_exitosa = await self.exploracion.probar_extensiones(
                     self.x, self.z, self.rangoScan, extensiones, alturas, 
-                    self.tamanoPlanicie, self.tolerancia
+                    self.tamanoPlanicie, self.tolerancia, agent=self
                 )
-                
+
+                # Verificar si fue detenido
+                if self.solicitudParada:
+                    self.logs("Verificación de extensiones interrumpida por solicitud de stop")
+                    return
+
                 if extension_exitosa:
                     self.logs(f"SUCCESS: Extension valida encontrada")
-                    self.estadoActual = EstadoAgente.STOPPED
+                    self.cambiarEstadoAgente(EstadoAgente.STOPPED, razon="extension valida encontrada")
                 else:
                     self.logs("No hay extensiones validas, escaner aleatorio")
                     # Generar nuevas coordenadas aleatorias
@@ -430,7 +481,7 @@ class ExplorerBot(BaseAgent):
             
         elif action == "wait":
             await asyncio.sleep(1)
-            
+
         else:
             self.logs(f"Acción desconocida: {action}")
             await asyncio.sleep(0.5)
