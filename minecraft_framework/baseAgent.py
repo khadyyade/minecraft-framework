@@ -108,6 +108,16 @@ class BaseAgent:
         self.ultimoCambioEstado = time.time()
         self.logs(f"Pasamos del estado {estadoAnterior.value} a {cmd.value}. {razon}")
 
+        # Escribir el estado actual en un archivo para que el workflow pueda leerlo
+        try:
+            import os
+            state_file = f"/tmp/{self.name}_state.txt" if os.name != 'nt' else f"C:\\temp\\{self.name}_state.txt"
+            os.makedirs(os.path.dirname(state_file), exist_ok=True)
+            with open(state_file, 'w') as f:
+                f.write(f"{cmd.value}\n{razon}\n{self.ultimoCambioEstado}")
+        except Exception as e:
+            pass  # No es crítico si falla
+
     # Procesa los comandos de control (pause, resume, stop, update) y cambia el estado del agente
     def gestionarControles(self, control: Dict[str, Any]):
         """

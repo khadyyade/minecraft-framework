@@ -282,8 +282,8 @@ class ChatRouter:
         """
         Espera activamente a que un agente deje de estar en estado RUNNING.
 
-        Funciona enviando comandos status repetidamente y esperando a que el agente
-        reporte un estado diferente a RUNNING.
+        Lee el archivo de estado que el agente escribe cada vez que cambia de estado.
+        Espera a ver RUNNING primero, luego espera a que cambie a otro estado.
 
         Args:
             agent_name: Nombre del agente (ExplorerBot, MinerBot, BuilderBot)
@@ -292,55 +292,60 @@ class ChatRouter:
         Returns:
             True si el agente terminó, False si hubo timeout
         """
-        import json
         import time
+        import os
 
-        print(f"[Workflow] Waiting for {agent_name} to finish (checking status)...")
+        print(f"[Workflow] Waiting for {agent_name} to finish (monitoring state file)...")
         if self.mc:
             self.mc.postToChat(f"[Workflow] Esperando a {agent_name}...")
 
+        # Ruta del archivo de estado
+        state_file = f"/tmp/{agent_name}_state.txt" if os.name != 'nt' else f"C:\\temp\\{agent_name}_state.txt"
+
         start_time = time.time()
-        checks = 0
+        last_log = 0
+        last_state = "UNKNOWN"
+        saw_running = False  # Flag para detectar que el agente empezó a trabajar
 
         while (time.time() - start_time) < timeout:
-            checks += 1
-
-            # Enviar solicitud de status
-            status_msg = {
-                "type": "control",
-                "target": agent_name,
-                "payload": {"cmd": "status"}
-            }
-
             try:
-                self.queues[agent_name].put_nowait(json.dumps(status_msg))
+                # Leer el archivo de estado
+                if os.path.exists(state_file):
+                    with open(state_file, 'r') as f:
+                        lines = f.readlines()
+                        if lines:
+                            current_state = lines[0].strip()
+
+                            # Si cambió el estado, logearlo
+                            if current_state != last_state:
+                                print(f"[Workflow] {agent_name} state: {last_state} → {current_state}")
+                                last_state = current_state
+
+                            # Primero debemos ver que el agente está RUNNING
+                            if current_state == "RUNNING":
+                                saw_running = True
+                                print(f"[Workflow] {agent_name} is now working...")
+
+                            # Solo terminamos si YA VIMOS RUNNING y ahora NO está en RUNNING
+                            if saw_running and current_state != "RUNNING":
+                                print(f"[Workflow] {agent_name} finished with state: {current_state}")
+                                if self.mc:
+                                    self.mc.postToChat(f"[Workflow] {agent_name} completado!")
+                                return True
             except Exception as e:
-                print(f"[Workflow] Error sending status: {e}")
-
-            # El agente imprimirá su estado en los logs
-            # Buscamos en los logs recientes o simplemente esperamos
-            # Como el agente YA imprime cuando cambia de estado,
-            # podemos asumir que después de enviar status, si esperamos
-            # un poco, el siguiente cambio de estado será visible
-
-            await asyncio.sleep(2)
+                pass  # Ignorar errores de lectura
 
             # Mostrar progreso cada 10 segundos
             elapsed = int(time.time() - start_time)
-            if checks % 5 == 0:
-                print(f"[Workflow] Still waiting for {agent_name}... ({elapsed}s, {checks} checks)")
+            if elapsed - last_log >= 10:
+                status = "working" if saw_running else "waiting to start"
+                print(f"[Workflow] {agent_name} {status} (state: {last_state}, {elapsed}s elapsed)")
+                last_log = elapsed
 
-            # NOTA: En esta implementación simple, asumimos que después de
-            # un tiempo razonable el agente habrá terminado.
-            # Una mejora sería parsear los logs o usar una cola de respuesta.
+            # Esperar un poco antes de verificar de nuevo
+            await asyncio.sleep(1)
 
-            # Por ahora, después de 30 checks (60 segundos) asumimos que terminó
-            # si no vemos actividad en RUNNING en los logs
-            if checks >= 15:  # 15 checks * 2 segundos = 30 segundos mínimo
-                print(f"[Workflow] {agent_name} should be finished after {checks} checks")
-                return True
-
-        print(f"[Workflow] Timeout waiting for {agent_name}")
+        print(f"[Workflow] Timeout waiting for {agent_name} (last state: {last_state}, saw_running: {saw_running})")
         return False
 
     async def execute_workflow(self, params: Dict[str, Any]):
@@ -427,10 +432,34 @@ class ChatRouter:
         self.queues["MinerBot"].put_nowait(json.dumps(miner_strategy_msg))
         await asyncio.sleep(1)
 
-        # ========== STEP 5: Miner - FULFILL (HACK para demo) ==========
-        print("[Workflow] Step 5: Auto-filling materials (HACK)...")
+        # ========== STEP 5: Miner - Start Mining ==========
+        print("[Workflow] Step 5: Starting miner...")
         if self.mc:
-            self.mc.postToChat("[Workflow] Paso 5: Auto-llenando materiales...")
+            self.mc.postToChat("[Workflow] Paso 5: Iniciando minado...")
+
+        # Construir comando miner start (usar coordenadas del jugador si no se especifican)
+        miner_args = {}
+        if params.get("miner_x") is not None:
+            miner_args["x"] = params["miner_x"]
+        if params.get("miner_y") is not None:
+            miner_args["y"] = params["miner_y"]
+        if params.get("miner_z") is not None:
+            miner_args["z"] = params["miner_z"]
+
+        miner_start_msg = {
+            "type": "control",
+            "target": "MinerBot",
+            "payload": {"cmd": "update", "args": {"start": miner_args}}
+        }
+        self.queues["MinerBot"].put_nowait(json.dumps(miner_start_msg))
+
+        # Esperar a que el Miner termine de minar (o llegue al límite)
+        await self.wait_for_agent_idle("MinerBot", timeout=300)
+
+        # ========== STEP 5.5: Miner - FULFILL (por si acaso faltan materiales) ==========
+        print("[Workflow] Step 5.5: Auto-filling remaining materials (HACK)...")
+        if self.mc:
+            self.mc.postToChat("[Workflow] Completando materiales faltantes...")
 
         miner_fulfill_msg = {
             "type": "control",
