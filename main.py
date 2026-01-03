@@ -142,6 +142,26 @@ async def main():
     # Pequeña pausa para que los agentes se inicialicen
     await asyncio.sleep(1)
 
+    # ============================================================================
+    # OPCIONAL: CONTROL REMOTO
+    # ============================================================================
+    # Importar el módulo de control remoto
+    from remote_control import start_remote_server
+    import threading
+
+    # Iniciar servidor remoto en un thread separado
+    remote_thread = threading.Thread(
+        target=start_remote_server,
+        args=(q_explorer, q_miner, q_builder),
+        kwargs={"host": "0.0.0.0", "port": 9090},
+        daemon=True
+    )
+    remote_thread.start()
+    print("[Main] ✓ Servidor de control remoto iniciado en puerto 9090")
+    print("[Main]   Los clientes pueden conectarse remotamente")
+    print("")
+    # ============================================================================
+
     # Conectar a Minecraft para el ChatRouter
     print("[Main] Conectando al servidor de Minecraft...")
     try:
