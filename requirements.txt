@@ -2,3 +2,8 @@ asyncio
 dataclasses; python_version<'3.7'
 Pyro4>=4.82
 # mcpi
+
+# Testing dependencies
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.0.0
