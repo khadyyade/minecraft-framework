@@ -302,31 +302,13 @@ class ExplorerBot(BaseAgent):
                     if extensiones:
                         self.logs(f"Hemos encontrado {len(extensiones)} posibles extensiones")
 
-                        # Calcular altura promedio del terreno (ignorando agua = -1)
-                        alturas_validas = [h for row in alturas for h in row if h != -1]
-                        if alturas_validas:
-                            altura_promedio = int(sum(alturas_validas) / len(alturas_validas))
-                        else:
-                            altura_promedio = 64  # Altura por defecto si todo es agua
-
                         msgDecision["action"] = "extend"
                         msgDecision["params"] = {
                             "extensiones": extensiones,
                             "datosEscaneo": datosEscaneo
                         }
                         msgDecision["reason"] = "IntentandoExtender"
-                        hayQueEnviarMapV1 = True
-                        datosMapV1 = {
-                            "esBusquedaInicial": self.contadorEscaneos == 1,
-                            "esBusquedaAmpliada": True,
-                            "hayTerrenoPlano": False,
-                            "esTodoAgua": False,
-                            "hayArboles": self.hayArboles,
-                            "hayArena": self.hayArena,
-                            "coordenadasInicioTerrenoPlano": {"x": self.x - tam_scan//2, "z": self.z - tam_scan//2},
-                            "coordenadasFinalTerrenoPlano": {"x": self.x + tam_scan//2, "z": self.z + tam_scan//2},
-                            "alturaPlanicie": altura_promedio
-                        }
+                        # NO enviamos mensaje aquí - esperamos a verificar extensiones en act()
                     else:
                         self.logs(f"No se puede extender")
 
@@ -436,7 +418,7 @@ class ExplorerBot(BaseAgent):
                 
                 # Delegar verificación de extensiones a la clase Exploracion
                 # Pasamos self para que pueda verificar solicitudParada
-                extension_exitosa = await self.exploracion.probar_extensiones(
+                extension_exitosa, datos_extension = await self.exploracion.probar_extensiones(
                     self.x, self.z, self.rangoScan, extensiones, alturas, 
                     self.tamanoPlanicie, self.tolerancia, agent=self
                 )
@@ -448,6 +430,30 @@ class ExplorerBot(BaseAgent):
 
                 if extension_exitosa:
                     self.logs(f"SUCCESS: Extension valida encontrada")
+                    # Enviar mensaje map.v1 ahora que confirmamos la planicie
+                    from minecraft_framework.messages import crearMensajeMapV1
+                    try:
+                        mensaje = crearMensajeMapV1(
+                            agent_state=self.estadoActual.value,
+                            coordenadaDeBusqueda={"x": self.x, "z": self.z},
+                            rangoDeBusqueda=self.rangoScan,
+                            numeroDeBusquedas=self.contadorEscaneos,
+                            esBusquedaInicial=False,
+                            esBusquedaAmpliada=True,
+                            hayTerrenoPlano=True,
+                            esTodoAgua=False,
+                            hayArboles=self.hayArboles,
+                            hayArena=self.hayArena,
+                            coordenadasInicioTerrenoPlano=datos_extension.get("coordInicio", {"x": self.x, "z": self.z}),
+                            coordenadasFinalTerrenoPlano=datos_extension.get("coordFin", {"x": self.x, "z": self.z}),
+                            alturaPlanicie=datos_extension.get("altura", 64)
+                        )
+                        self.enviarMensaje("BuilderBot", mensaje)
+                        self.logs(f"Mensaje map.v1 enviado a BuilderBot: Extension válida confirmada")
+                        if self.mc:
+                            self.mc.postToChat("[Explorer] Planicie encontrada (extensión) y enviada al Builder")
+                    except Exception as e:
+                        self.logs(f"Error al enviar mensaje map.v1: {e}")
                     self.cambiarEstadoAgente(EstadoAgente.STOPPED, razon="extension valida encontrada")
                 else:
                     self.logs("No hay extensiones validas, escaner aleatorio")

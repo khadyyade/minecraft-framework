@@ -148,7 +148,7 @@ class Exploracion:
         await asyncio.sleep(0.5)
 
     async def probar_extensiones(self, x: int, z: int, rango_scan: int, extensiones: List[tuple],
-                                 alturas: List[List[int]], tam_planicie: int, tolerancia: int, agent=None) -> bool:
+                                 alturas: List[List[int]], tam_planicie: int, tolerancia: int, agent=None) -> Tuple[bool, Dict[str, Any]]:
         """
         Prueba las extensiones encontradas para ver si generan una planicie válida.
 
@@ -165,16 +165,19 @@ class Exploracion:
             agent: Referencia al agente para verificar si debe detenerse
 
         Returns:
-            True si se encontró una extensión válida, False en caso contrario
+            Tupla (exito, datos):
+                - exito: True si se encontró una extensión válida
+                - datos: Dict con coordenadas inicio/fin y altura si exito=True, sino {}
         """
         self.limpiarMapaCalor(x, z, rango_scan)
+        tam_matriz = len(alturas)
 
         # Probar cada extensión encontrada
         for extension in extensiones:
             # Verificar si el agente debe detenerse
             if agent and agent.solicitudParada:
                 print(f"[Exploracion] Verificación de extensiones interrumpida por solicitud de stop")
-                return False
+                return False, {}
 
             altura_ref, direccion, coords, longitud = extension
 
@@ -186,7 +189,7 @@ class Exploracion:
                 # Verificar si el agente debe detenerse
                 if agent and agent.solicitudParada:
                     print(f"[Exploracion] Verificación de extensiones interrumpida por solicitud de stop")
-                    return False
+                    return False, {}
 
                 # Crear nueva extensión con el offset aplicado
                 i, j = coords
@@ -203,14 +206,24 @@ class Exploracion:
                 # Verificar si esta extensión con este offset es válida
                 if self.verificar_extension(x, z, alturas, extension_offset, tam_planicie, tolerancia):
                     self.mc.postToChat(f"[ExplorerBot] Extension encontrada: {direccion} en offset {offset}")
-                    return True
+                    # Calcular coordenadas reales de la planicie encontrada
+                    i_ext, j_ext = coords_offset
+                    # Convertir coordenadas de matriz a coordenadas del mundo
+                    x_inicio = x - tam_matriz // 2 + i_ext
+                    z_inicio = z - tam_matriz // 2 + j_ext
+                    datos = {
+                        "coordInicio": {"x": x_inicio, "z": z_inicio},
+                        "coordFin": {"x": x_inicio + tam_planicie - 1, "z": z_inicio + tam_planicie - 1},
+                        "altura": altura_ref
+                    }
+                    return True, datos
                 else:
                     # Limpiar y probar siguiente offset
                     await asyncio.sleep(0.5)
                     self.limpiarMapaCalor(x, z, rango_scan + 4)
 
         # Si ninguna extensión genera un terreno plano, retornar False
-        return False
+        return False, {}
 
     def existe_planicie(self, alturas: List[List[int]], ancho: int, alto: int,
                        tolerancia: int = 0) -> Tuple[bool, tuple]:
